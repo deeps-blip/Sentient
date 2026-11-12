@@ -1,0 +1,83 @@
+{
+  "version": "2026.11.1",
+  "updated_at": "2026-11-11T00:00:00Z",
+  "signatures": [
+    {
+      "name": "EICAR-Standard-Anti-Virus-Test-File",
+      "sha256": "275a021bbfb6489e54d471899f7db9d1663fc695ec2fe2a2c4538aabf651fd0f",
+      "md5": "44d88612fea8a8f36de82e1278abb02f",
+      "severity": "Test / Verification",
+      "description": "Official EICAR standard anti-malware test file (68-byte raw form)."
+    },
+    {
+      "name": "EICAR-Standard-Anti-Virus-Test-File (LF)",
+      "sha256": "131f95c51cc819465fa1797f6ccacf9d494aaaff46fa3eac73ae63ffbdfd8267",
+      "md5": "69630e4574ec6798239b091cda43dca0",
+      "severity": "Test / Verification",
+      "description": "Official EICAR test file with trailing LF newline."
+    },
+    {
+      "name": "EICAR-Standard-Anti-Virus-Test-File (CRLF)",
+      "sha256": "8b3f191819931d1f2cef7289239b5f77c00b079847b9c2636e56854d1e5eff71",
+      "md5": "e7e5fa40569514ec442bbdf755d89c2f",
+      "severity": "Test / Verification",
+      "description": "Official EICAR test file with trailing CRLF newline."
+    },
+    {
+      "name": "Sentient.Test.SimulatedThreat.A",
+      "sha256": "79aa775e2783701d037b2101cd99aad6743d5837914e33f05906bcc5e656520e",
+      "md5": "257968f338d93f96f3d7c5eecdf2f952",
+      "severity": "Test / Simulation",
+      "description": "Benign deterministic test signature matching the string SENTIENT-LOCAL-SIMULATED-MALWARE-SAMPLE-V1 for safe end-to-end quarantine verification."
+    },
+    {
+      "name": "Ransom.Win32.WannaCry.A",
+      "sha256": "24d004a104d4d54034dbcffc2a4b19a11f39008a575aa614ea04703480b1022c",
+      "md5": "84c82835a5d21bbcf75a61706d8ab549",
+      "severity": "Critical",
+      "description": "Known historical WannaCry ransomware dropper indicator."
+    },
+    {
+      "name": "Ransom.Win32.WannaCry.B",
+      "sha256": "ed01ebfbc9eb5bbea545af4d01bf5f1071661840480439c6e5babe8e080e41aa",
+      "md5": "db349b97c37d22f5ea1d1841e3c89eb4",
+      "severity": "Critical",
+      "description": "Known historical WannaCry ransomware payload indicator."
+    },
+    {
+      "name": "Ransom.Win32.NotPetya.A",
+      "sha256": "027cc450ef5f8c5f653329641ec1fed91f694e0d229928963b30f6b0d7d3a745",
+      "md5": "71b6a493388e7d0b40c83ce903bc6b04",
+      "severity": "Critical",
+      "description": "Known historical NotPetya wiper/ransomware indicator."
+    },
+    {
+      "name": "Trojan.Win32.Emotet.A",
+      "sha256": "4c64b0f6b6476f3b02591b67f9a0a65d1e5d3a8a5f2d6d3b1e8c6a7b9f4e2a11",
+      "md5": "3a1c2b3d4e5f60718293a4b5c6d7e8f9",
+      "severity": "High",
+      "description": "Simulated Emotet banking trojan signature entry."
+    },
+    {
+      "name": "Trojan.Win32.TrickBot.A",
+      "sha256": "7b9a4f3c2d1e0a8b7c6d5e4f3a2b1c0d9e8f7a6b5c4d3e2f1a0b9c8d7e6f5a4b",
+      "md5": "1f2e3d4c5b6a79880716253443526170",
+      "severity": "High",
+      "description": "Simulated TrickBot modular trojan signature entry."
+    },
+    {
+      "name": "Backdoor.Win32.CobaltStrike.Beacon",
+      "sha256": "9f8e7d6c5b4a3928172635445362718091a2b3c4d5e6f708192a3b4c5d6e7f80",
+      "md5": "99887766554433221100ffeeddccbbaa",
+      "severity": "Critical",
+      "description": "Simulated unauthorized post-exploitation beacon signature entry."
+    },
+    {
+      "name": "Spyware.Win32.AgentTesla.A",
+      "sha256": "c1d2e3f4a5b60718293a4b5c6d7e8f90112233445566778899aabbccddeeff00",
+      "md5": "aa11bb22cc33dd44ee55ff6600778899",
+      "severity": "High",
+      "description": "Simulated credential stealer / keylogger signature entry."
+    }
+  ]
+}
