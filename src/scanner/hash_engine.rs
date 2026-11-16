@@ -62,6 +62,7 @@ impl SignatureIndex {
         self.entries.len()
     }
 
+    #[allow(dead_code)]
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }
@@ -94,6 +95,7 @@ impl SignatureStore {
         }
     }
 
+    #[allow(dead_code)]
     pub fn with_path(path: PathBuf) -> Self {
         Self { path }
     }
@@ -200,6 +202,17 @@ pub fn quick_scan_roots() -> Vec<PathBuf> {
     for p in candidates {
         if p.exists() && !unique.iter().any(|u: &PathBuf| u == &p) {
             unique.push(p);
+        }
+    }
+    if unique.is_empty() {
+        if let Some(home) = std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME")) {
+            let p = PathBuf::from(home);
+            if p.exists() {
+                unique.push(p);
+            }
+        }
+        if unique.is_empty() {
+            unique.push(std::env::temp_dir());
         }
     }
     unique
@@ -744,5 +757,14 @@ mod tests {
             .is_some());
 
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_quick_scan_roots_returns_existing_directories() {
+        let roots = quick_scan_roots();
+        assert!(!roots.is_empty(), "quick_scan_roots should never be empty");
+        for r in &roots {
+            assert!(r.exists(), "Returned root '{}' must exist", r.display());
+        }
     }
 }

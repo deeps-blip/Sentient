@@ -67,6 +67,24 @@ pub fn read_latest_mrt_report() -> Result<MrtReport, String> {
         .ok_or_else(|| "No completed system scan entries found yet.".to_string())
 }
 
+/// Modern alias for `read_latest_mrt_report`.
+#[allow(dead_code)]
+pub fn read_latest_system_report() -> Result<MrtReport, String> {
+    read_latest_mrt_report()
+}
+
+/// Modern alias for `mrt_executable_path`.
+#[allow(dead_code)]
+pub fn system_executable_path() -> PathBuf {
+    mrt_executable_path()
+}
+
+/// Modern alias for `mrt_log_path`.
+#[allow(dead_code)]
+pub fn system_log_path() -> PathBuf {
+    mrt_log_path()
+}
+
 /// Dispatches background deep system inspection according to the active platform:
 /// - Windows: Executes Windows Malicious Software Removal Tool (`mrt.exe /Q` or `/F /Q`)
 /// - Linux: Executes ClamAV (if present) or Sentient Native Linux Deep System Engine
@@ -76,6 +94,12 @@ pub fn run_mrt_scan(full_scan: bool, cancel_flag: Arc<AtomicBool>, tx: Sender<Sc
 
     #[cfg(not(windows))]
     run_linux_system_scan(full_scan, cancel_flag, tx);
+}
+
+/// Modern alias for `run_mrt_scan`.
+#[allow(dead_code)]
+pub fn run_system_scan(full_scan: bool, cancel_flag: Arc<AtomicBool>, tx: Sender<ScanEvent>) {
+    run_mrt_scan(full_scan, cancel_flag, tx);
 }
 
 /// Windows implementation: executes `mrt.exe` and watches `mrt.log`.
@@ -469,32 +493,28 @@ fn run_clamscan_engine(
                     last_status = Instant::now();
                 }
 
-                if line.contains("FOUND") {
-                    if let Some((path_part, threat_part)) = line.split_once(':') {
-                        let path = PathBuf::from(path_part.trim());
-                        let threat_name = threat_part.replace("FOUND", "").trim().to_string();
-                        let threat = Threat {
-                            id: format!(
-                                "clam_{}_{}",
-                                chrono::Local::now().format("%Y%m%d%H%M%S"),
-                                detected_threats.len()
-                            ),
-                            path: path.clone(),
-                            threat_name: threat_name.clone(),
-                            sha256: String::new(),
-                            md5: String::new(),
-                            file_size: 0,
-                            detected_at: now_timestamp(),
-                            source: ThreatSource::WindowsMrt,
-                            quarantined: false,
-                        };
-                        let _ = tx.send(ScanEvent::ThreatFound {
-                            path,
-                            threat_name: threat_name.clone(),
-                            hash: format!("CLAMAV:{}", threat_name),
-                        });
-                        detected_threats.push(threat);
-                    }
+                if let Some((path, threat_name)) = parse_clamav_line(&line) {
+                    let threat = Threat {
+                        id: format!(
+                            "clam_{}_{}",
+                            chrono::Local::now().format("%Y%m%d%H%M%S"),
+                            detected_threats.len()
+                        ),
+                        path: path.clone(),
+                        threat_name: threat_name.clone(),
+                        sha256: String::new(),
+                        md5: String::new(),
+                        file_size: 0,
+                        detected_at: now_timestamp(),
+                        source: ThreatSource::WindowsMrt,
+                        quarantined: false,
+                    };
+                    let _ = tx.send(ScanEvent::ThreatFound {
+                        path,
+                        threat_name: threat_name.clone(),
+                        hash: format!("CLAMAV:{}", threat_name),
+                    });
+                    detected_threats.push(threat);
                 }
             }
         }
@@ -647,49 +667,13 @@ fn run_native_linux_system_engine(
                 use std::os::unix::fs::PermissionsExt;
                 if let Ok(meta) = entry.metadata() {
                     let mode_bits = meta.permissions().mode();
-                    let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-
-                    // Heuristic 1: Executable dropped in temporary / in-memory shared memory
-                    let in_temp = path.starts_with("/tmp")
-                        || path.starts_with("/var/tmp")
-                        || path.starts_with("/dev/shm");
                     let is_executable = (mode_bits & 0o111) != 0;
+                    let is_world_writable = (mode_bits & 0o002) != 0;
 
-                    if in_temp && is_executable && !file_name.is_empty() {
-                        let threat_name = if file_name.starts_with('.') {
-                            "Linux.Suspicious.HiddenDropper".to_string()
-                        } else {
-                            "Linux.Suspicious.DropExecutable".to_string()
-                        };
-                        let threat = Threat {
-                            id: format!(
-                                "lnx_{}_{}",
-                                chrono::Local::now().format("%Y%m%d%H%M%S"),
-                                detected_threats.len()
-                            ),
-                            path: path.clone(),
-                            threat_name: threat_name.clone(),
-                            sha256: String::new(),
-                            md5: String::new(),
-                            file_size: meta.len(),
-                            detected_at: now_timestamp(),
-                            source: ThreatSource::WindowsMrt,
-                            quarantined: false,
-                        };
-                        let _ = tx.send(ScanEvent::ThreatFound {
-                            path: path.clone(),
-                            threat_name: threat_name.clone(),
-                            hash: format!("LINUX-HEURISTIC:{}", threat_name),
-                        });
-                        detected_threats.push(threat);
-                    }
-
-                    // Heuristic 2: World-writable system binary in /bin, /sbin, /usr/bin
-                    let in_system_bin = path.starts_with("/bin")
-                        || path.starts_with("/sbin")
-                        || path.starts_with("/usr/bin");
-                    if in_system_bin && (mode_bits & 0o002) != 0 {
-                        let threat_name = "Linux.Vulnerability.WorldWritableBinary".to_string();
+                    if let Some(h_threat) =
+                        check_linux_path_heuristics(&path, is_executable, is_world_writable)
+                    {
+                        let threat_name = h_threat.to_string();
                         let threat = Threat {
                             id: format!(
                                 "lnx_{}_{}",
@@ -819,7 +803,83 @@ fn run_native_linux_system_engine(
     });
 }
 
+/// Pure heuristic analyzer for Linux file paths and Unix permission bits.
+/// Detects:
+/// - `Linux.Suspicious.HiddenDropper`: Hidden executable in /tmp, /var/tmp, or /dev/shm
+/// - `Linux.Suspicious.DropExecutable`: Executable in /tmp, /var/tmp, or /dev/shm
+/// - `Linux.Vulnerability.WorldWritableBinary`: World-writable system binary in system bin dirs
+#[allow(dead_code)]
+pub fn check_linux_path_heuristics(
+    path: &Path,
+    is_executable: bool,
+    is_world_writable: bool,
+) -> Option<&'static str> {
+    let path_str = path.to_str().unwrap_or("");
+    let in_temp = path.starts_with("/tmp")
+        || path.starts_with("/var/tmp")
+        || path.starts_with("/dev/shm")
+        || path_str.starts_with("/tmp/")
+        || path_str.starts_with("/var/tmp/")
+        || path_str.starts_with("/dev/shm/")
+        || path_str == "/tmp"
+        || path_str == "/var/tmp"
+        || path_str == "/dev/shm";
+
+    let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+
+    if in_temp && is_executable && !file_name.is_empty() {
+        if file_name.starts_with('.') {
+            return Some("Linux.Suspicious.HiddenDropper");
+        } else {
+            return Some("Linux.Suspicious.DropExecutable");
+        }
+    }
+
+    let in_system_bin = path.starts_with("/bin")
+        || path.starts_with("/sbin")
+        || path.starts_with("/usr/bin")
+        || path.starts_with("/usr/sbin")
+        || path.starts_with("/usr/local/bin")
+        || path_str.starts_with("/bin/")
+        || path_str.starts_with("/sbin/")
+        || path_str.starts_with("/usr/bin/")
+        || path_str.starts_with("/usr/sbin/")
+        || path_str.starts_with("/usr/local/bin/");
+
+    if in_system_bin && is_world_writable {
+        return Some("Linux.Vulnerability.WorldWritableBinary");
+    }
+
+    None
+}
+
+/// Parses a ClamAV stdout line. Returns `Some((path, threat_name))` if a threat was found.
+/// Example line: `/tmp/malware.bin: Win.Test.EICAR_HDB-1 FOUND`
+#[allow(dead_code)]
+pub fn parse_clamav_line(line: &str) -> Option<(PathBuf, String)> {
+    let trimmed = line.trim();
+    if !trimmed.ends_with("FOUND") {
+        return None;
+    }
+    let (path_part, rest) = trimmed.split_once(':')?;
+    let path_clean = path_part.trim();
+    if path_clean.is_empty() {
+        return None;
+    }
+    let threat_candidate = rest.trim();
+    let threat_name = if let Some(stripped) = threat_candidate.strip_suffix("FOUND") {
+        stripped.trim().to_string()
+    } else {
+        threat_candidate.replace("FOUND", "").trim().to_string()
+    };
+    if threat_name.is_empty() {
+        return None;
+    }
+    Some((PathBuf::from(path_clean), threat_name))
+}
+
 /// Formats a standardized system scan summary block compatible with the dashboard telemetry parser.
+#[allow(dead_code)]
 pub fn format_linux_system_scan_block(
     engine_name: &str,
     engine_ver: &str,
@@ -1391,5 +1451,65 @@ Return code: 6 (0x6)
             extract_path_from_detail(&report.infected_items[1].detail),
             Some(PathBuf::from("/var/tmp/miner.bin"))
         );
+    }
+
+    #[test]
+    fn test_check_linux_path_heuristics() {
+        // Dropper in /tmp
+        let p1 = PathBuf::from("/tmp/dropper.elf");
+        assert_eq!(
+            check_linux_path_heuristics(&p1, true, false),
+            Some("Linux.Suspicious.DropExecutable")
+        );
+        // Non-executable in /tmp is not a dropper
+        assert_eq!(check_linux_path_heuristics(&p1, false, false), None);
+
+        // Hidden dropper in /dev/shm
+        let p2 = PathBuf::from("/dev/shm/.miner");
+        assert_eq!(
+            check_linux_path_heuristics(&p2, true, false),
+            Some("Linux.Suspicious.HiddenDropper")
+        );
+
+        // World-writable binary in /usr/bin
+        let p3 = PathBuf::from("/usr/bin/sudo");
+        assert_eq!(
+            check_linux_path_heuristics(&p3, true, true),
+            Some("Linux.Vulnerability.WorldWritableBinary")
+        );
+        // Normal non-world-writable binary in /bin
+        let p4 = PathBuf::from("/bin/bash");
+        assert_eq!(check_linux_path_heuristics(&p4, true, false), None);
+
+        // Clean user file
+        let p5 = PathBuf::from("/home/user/document.pdf");
+        assert_eq!(check_linux_path_heuristics(&p5, false, false), None);
+    }
+
+    #[test]
+    fn test_parse_clamav_line() {
+        let line1 = "/tmp/malware.exe: Win.Test.EICAR_HDB-1 FOUND";
+        assert_eq!(
+            parse_clamav_line(line1),
+            Some((
+                PathBuf::from("/tmp/malware.exe"),
+                "Win.Test.EICAR_HDB-1".to_string()
+            ))
+        );
+
+        let line2 = "/home/user/test.elf: Unix.Trojan.Dropper-999 FOUND";
+        assert_eq!(
+            parse_clamav_line(line2),
+            Some((
+                PathBuf::from("/home/user/test.elf"),
+                "Unix.Trojan.Dropper-999".to_string()
+            ))
+        );
+
+        let clean_line = "/home/user/clean.txt: OK";
+        assert_eq!(parse_clamav_line(clean_line), None);
+
+        let summary_line = "----------- SCAN SUMMARY -----------";
+        assert_eq!(parse_clamav_line(summary_line), None);
     }
 }

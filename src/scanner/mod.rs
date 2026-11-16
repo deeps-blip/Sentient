@@ -1,2 +1,6 @@
 pub mod hash_engine;
-pub mod mrt;
+pub mod scanner;
+
+// Backwards-compatibility alias for internal legacy references
+#[allow(unused_imports)]
+pub use scanner as mrt;

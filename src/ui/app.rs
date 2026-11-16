@@ -7,7 +7,7 @@ use crate::quarantine::manager::QuarantineManager;
 use crate::scanner::hash_engine::{
     quick_scan_roots, run_hash_scan, run_in_memory_eicar_self_test, SignatureIndex, SignatureStore,
 };
-use crate::scanner::mrt::{
+use crate::scanner::scanner::{
     mrt_executable_path, mrt_log_path, read_latest_mrt_report, run_mrt_scan,
 };
 use crossbeam_channel::{unbounded, Receiver};

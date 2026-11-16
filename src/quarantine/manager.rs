@@ -54,6 +54,7 @@ impl QuarantineManager {
         &self.quarantine_dir
     }
 
+    #[allow(dead_code)]
     pub fn index_path(&self) -> &Path {
         &self.index_path
     }

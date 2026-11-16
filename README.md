@@ -51,7 +51,7 @@
    - Computes **SHA-256** and **MD5** digests using constant **64 KiB streaming buffers** (inspects multi-gigabyte archives without memory spikes).
    - Evaluates files against the local offline IOC database (`signatures.json`) plus **cross-chunk rolling-window EICAR detection** in memory.
    - Gracefully handles locked or protected OS files and reports skipped counts cleanly.
-2. **Deep System Scanner Integration (`mrt.rs`)**:
+2. **Deep System Scanner Integration (`scanner.rs`)**:
    - **On Windows**: Executes background Windows Malicious Software Removal Tool (`mrt.exe /Q` or `/F /Q`) with silent telemetry report parsing into Sentient's dashboard and audit logs.
    - **On Linux**:
      - **ClamAV Integration**: Automatically detects and leverages `clamscan` if installed on `/usr/bin/clamscan`, `/bin/clamscan`, `/usr/local/bin/clamscan`, or on `$PATH`, streaming live infected file detections to the UI.
@@ -125,9 +125,9 @@ C:\Sentient
     ├── models\
     │   └── mod.rs              # Shared models, XDG / LocalAppData paths, ScanEvent, Threat
     ├── scanner\
-    │   ├── mod.rs
+    │   ├── mod.rs              # Module exports & backwards-compatibility aliases
     │   ├── hash_engine.rs      # Rayon parallel walker, 64 KiB hasher & EICAR matcher
-    │   └── mrt.rs              # Dual-engine system scanner (Windows MRT + Linux ClamAV/Native)
+    │   └── scanner.rs          # Dual-engine system scanner (Windows Core + Linux ClamAV/Native)
     ├── quarantine\
     │   ├── mod.rs
     │   └── manager.rs          # XOR 0x5A scrambler, quarantine indexer & secure zero-wipe
@@ -195,11 +195,15 @@ cargo build --release
 ```
 
 ### Automated Unit Test Suite
-Sentient includes comprehensive unit tests verifying both Windows and Linux implementations:
-- **Linux Engine Round-Trip**: Validates formatting and parsing of Linux system scan reports and threat telemetry.
-- **Windows MRT Telemetry**: Validates clean and infected scan report parsing.
-- **Quarantine Isolation & Zero-Wipe**: Verifies `.quarantined` extension, XOR `0x5A` scrambling, restoration fidelity, and secure zero-fill wipe.
-- **Streaming Hasher & Chunk Boundaries**: Tests 64 KiB streaming SHA-256/MD5 calculation and rolling-window EICAR detection across buffer boundaries.
+Sentient includes 13 comprehensive unit tests validating Windows and Linux scanning engines, heuristic algorithms, quarantine isolation, and cryptographic integrity:
+- **Linux Security Heuristics (`test_check_linux_path_heuristics`)**: Validates detection of unauthorized executables in `/tmp`, hidden droppers in `/dev/shm` (`.miner`), and world-writable binary audits in `/usr/bin`.
+- **ClamAV Live Parser (`test_parse_clamav_line`)**: Tests stdout line-by-line parsing for real-time `path: ThreatName FOUND` stream telemetry.
+- **Linux Engine Telemetry Round-Trip (`test_format_and_parse_linux_roundtrip`, `test_parse_linux_system_scan_report`)**: Validates structured report formatting and parsing across Linux system scan executions.
+- **Windows System Telemetry (`test_parse_clean_windows_11_mrt_log`, `test_parse_infected_mrt_log_entry`)**: Validates clean and infected scan report parsing.
+- **Linux & Windows Target Roots (`test_quick_scan_roots_returns_existing_directories`)**: Verifies dynamic resolution of user directories (`$HOME/Downloads`, `~/.local/bin`, `/tmp`, etc.).
+- **Quarantine Isolation & Zero-Wipe (`test_quarantine_xor_and_restore_roundtrip`, `test_secure_delete_removes_payload_and_index`)**: Verifies `.quarantined` extension, XOR `0x5A` scrambling, restoration fidelity, and secure zero-fill wipe.
+- **Streaming Hasher & Chunk Boundaries (`test_eicar_split_across_chunk_boundary`, `test_in_memory_eicar_self_test`)**: Tests 64 KiB streaming SHA-256/MD5 calculation and rolling-window EICAR detection across buffer boundaries.
+- **Multithreaded Concurrent Scanner (`test_multithreaded_directory_scan_detects_simulated_sample`)**: Validates Rayon thread-pool traversal and thread-safe threat aggregation.
 
 ---
 
