@@ -1,6 +1,6 @@
 use std::path::Path;
 
-/// Returns `true` when the current process runs with elevated Administrator privileges.
+/// Returns `true` when the current process runs with elevated Administrator / root privileges.
 #[cfg(windows)]
 pub fn is_elevated() -> bool {
     use core::ffi::c_void;
@@ -33,8 +33,14 @@ pub fn is_elevated() -> bool {
     }
 }
 
-/// Non-Windows fallback for cross-platform compilation.
-#[cfg(not(windows))]
+/// Linux / Unix check: returns `true` if running as root (UID 0).
+#[cfg(unix)]
+pub fn is_elevated() -> bool {
+    unsafe { libc::geteuid() == 0 }
+}
+
+/// Non-Windows, non-Unix fallback for cross-platform compilation.
+#[cfg(not(any(windows, unix)))]
 pub fn is_elevated() -> bool {
     false
 }
@@ -76,10 +82,55 @@ pub fn relaunch_as_admin() -> Result<(), String> {
     }
 }
 
-/// Non-Windows fallback for UAC relaunch.
-#[cfg(not(windows))]
+/// Linux / Unix elevation prompt using PolicyKit (pkexec) or sudo.
+#[cfg(unix)]
 pub fn relaunch_as_admin() -> Result<(), String> {
-    Err("UAC elevation is only supported on Windows.".to_string())
+    let exe_path = std::env::current_exe()
+        .map_err(|e| format!("Failed to locate Sentient executable path: {e}"))?;
+
+    // Try PolicyKit first (desktop standard graphical elevation prompt)
+    if which_command_exists("pkexec") {
+        let child = std::process::Command::new("pkexec")
+            .arg(&exe_path)
+            .spawn();
+        return match child {
+            Ok(_) => Ok(()),
+            Err(e) => Err(format!("PolicyKit (pkexec) elevation launch failed: {e}")),
+        };
+    }
+
+    // Fallback: try sudo
+    if which_command_exists("sudo") {
+        let child = std::process::Command::new("sudo")
+            .arg("-E")
+            .arg(&exe_path)
+            .spawn();
+        return match child {
+            Ok(_) => Ok(()),
+            Err(e) => Err(format!("sudo elevation launch failed: {e}")),
+        };
+    }
+
+    Err("Neither pkexec nor sudo is available on this system for elevation.".to_string())
+}
+
+#[cfg(unix)]
+fn which_command_exists(cmd: &str) -> bool {
+    if let Some(path) = std::env::var_os("PATH") {
+        for dir in std::env::split_paths(&path) {
+            let candidate = dir.join(cmd);
+            if candidate.is_file() {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Fallback for other platforms.
+#[cfg(not(any(windows, unix)))]
+pub fn relaunch_as_admin() -> Result<(), String> {
+    Err("Elevation is not supported on this platform.".to_string())
 }
 
 /// Applies Windows quarantine hardening to an isolated file:
@@ -124,7 +175,29 @@ pub fn harden_quarantined_file(path: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
-#[cfg(not(windows))]
+/// Linux / Unix quarantine hardening:
+/// - Strips all read, write, and execute permissions (0o000)
+/// - If running as root, applies immutable flag (`chattr +i`)
+#[cfg(unix)]
+pub fn harden_quarantined_file(path: &Path) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    // 1. Remove all permissions so no process can execute or inspect raw content:
+    let perms = std::fs::Permissions::from_mode(0o000);
+    let _ = std::fs::set_permissions(path, perms);
+
+    // 2. Best-effort immutable flag on Linux if running as root
+    if is_elevated() {
+        let _ = std::process::Command::new("chattr")
+            .arg("+i")
+            .arg(path)
+            .output();
+    }
+
+    Ok(())
+}
+
+#[cfg(not(any(windows, unix)))]
 pub fn harden_quarantined_file(path: &Path) -> std::io::Result<()> {
     if let Ok(meta) = std::fs::metadata(path) {
         let mut perms = meta.permissions();
@@ -169,7 +242,29 @@ pub fn unharden_quarantined_file(path: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
-#[cfg(not(windows))]
+/// Reverses quarantine permission locks on Linux / Unix:
+/// - Removes immutable flag (`chattr -i`) if set
+/// - Restores read & write permissions (0o600)
+#[cfg(unix)]
+pub fn unharden_quarantined_file(path: &Path) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    // 1. Remove immutable flag if set
+    if is_elevated() {
+        let _ = std::process::Command::new("chattr")
+            .arg("-i")
+            .arg(path)
+            .output();
+    }
+
+    // 2. Restore owner read/write (0o600: rw-------)
+    let perms = std::fs::Permissions::from_mode(0o600);
+    std::fs::set_permissions(path, perms)?;
+
+    Ok(())
+}
+
+#[cfg(not(any(windows, unix)))]
 pub fn unharden_quarantined_file(path: &Path) -> std::io::Result<()> {
     if let Ok(meta) = std::fs::metadata(path) {
         let mut perms = meta.permissions();

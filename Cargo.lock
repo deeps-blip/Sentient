@@ -2996,6 +2996,7 @@ dependencies = [
  "egui",
  "hex",
  "image",
+ "libc",
  "md-5",
  "rayon",
  "rfd",

@@ -268,11 +268,23 @@ pub struct PersistedAppState {
     pub last_mrt_report: Option<MrtReport>,
 }
 
-/// Returns `%LOCALAPPDATA%\Sentient` (or a sensible fallback on non-Windows hosts).
+/// Returns `%LOCALAPPDATA%\Sentient` on Windows, or `$XDG_DATA_HOME/sentient` (`~/.local/share/sentient`) on Linux.
 pub fn sentient_data_dir() -> PathBuf {
+    #[cfg(windows)]
     if let Some(local_app_data) = std::env::var_os("LOCALAPPDATA") {
         return PathBuf::from(local_app_data).join("Sentient");
     }
+
+    #[cfg(unix)]
+    {
+        if let Some(xdg) = std::env::var_os("XDG_DATA_HOME") {
+            return PathBuf::from(xdg).join("sentient");
+        }
+        if let Some(home) = std::env::var_os("HOME") {
+            return PathBuf::from(home).join(".local").join("share").join("sentient");
+        }
+    }
+
     if let Some(home) = std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME")) {
         return PathBuf::from(home).join(".sentient");
     }

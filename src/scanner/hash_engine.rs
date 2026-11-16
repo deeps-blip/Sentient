@@ -156,26 +156,44 @@ impl SignatureStore {
 /// Returns high-risk user-accessible directories for fast native Quick Hash Scans.
 pub fn quick_scan_roots() -> Vec<PathBuf> {
     let mut candidates = Vec::new();
-    if let Some(profile) = std::env::var_os("USERPROFILE") {
-        let home = PathBuf::from(profile);
-        candidates.push(home.join("Downloads"));
-        candidates.push(home.join("Desktop"));
+
+    #[cfg(windows)]
+    {
+        if let Some(profile) = std::env::var_os("USERPROFILE") {
+            let home = PathBuf::from(profile);
+            candidates.push(home.join("Downloads"));
+            candidates.push(home.join("Desktop"));
+        }
+        if let Some(temp) = std::env::var_os("TEMP") {
+            candidates.push(PathBuf::from(temp));
+        }
+        if let Some(appdata) = std::env::var_os("APPDATA") {
+            candidates.push(
+                PathBuf::from(appdata)
+                    .join("Microsoft")
+                    .join("Windows")
+                    .join("Start Menu")
+                    .join("Programs")
+                    .join("Startup"),
+            );
+        }
+        if let Some(local_appdata) = std::env::var_os("LOCALAPPDATA") {
+            candidates.push(PathBuf::from(local_appdata).join("Temp"));
+        }
     }
-    if let Some(temp) = std::env::var_os("TEMP") {
-        candidates.push(PathBuf::from(temp));
-    }
-    if let Some(appdata) = std::env::var_os("APPDATA") {
-        candidates.push(
-            PathBuf::from(appdata)
-                .join("Microsoft")
-                .join("Windows")
-                .join("Start Menu")
-                .join("Programs")
-                .join("Startup"),
-        );
-    }
-    if let Some(local_appdata) = std::env::var_os("LOCALAPPDATA") {
-        candidates.push(PathBuf::from(local_appdata).join("Temp"));
+
+    #[cfg(not(windows))]
+    {
+        if let Some(home_os) = std::env::var_os("HOME") {
+            let home = PathBuf::from(home_os);
+            candidates.push(home.join("Downloads"));
+            candidates.push(home.join("Desktop"));
+            candidates.push(home.join(".local").join("bin"));
+            candidates.push(home.join(".config").join("autostart"));
+        }
+        candidates.push(PathBuf::from("/tmp"));
+        candidates.push(PathBuf::from("/var/tmp"));
+        candidates.push(PathBuf::from("/dev/shm"));
     }
 
     let mut unique = Vec::new();

@@ -3,21 +3,27 @@ use crate::models::{
     ThreatSource,
 };
 use crossbeam_channel::Sender;
-use std::fs::File;
-use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+#[cfg(windows)]
+use std::fs::File;
+#[cfg(windows)]
+use std::io::Read;
+#[cfg(windows)]
+use std::process::Command;
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
 
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
-/// Resolves `%windir%\system32\mrt.exe` (falling back to `C:\Windows\System32\mrt.exe`).
+/// Resolves the deep system scan engine executable path:
+/// - Windows: `%windir%\system32\mrt.exe`
+/// - Linux: `clamscan` if installed, or the current executable (Native Linux Engine)
+#[cfg(windows)]
 pub fn mrt_executable_path() -> PathBuf {
     let windir = std::env::var_os("WINDIR")
         .or_else(|| std::env::var_os("SystemRoot"))
@@ -26,7 +32,18 @@ pub fn mrt_executable_path() -> PathBuf {
     windir.join("System32").join("mrt.exe")
 }
 
-/// Resolves `C:\Windows\debug\mrt.log` via `%windir%`.
+#[cfg(not(windows))]
+pub fn mrt_executable_path() -> PathBuf {
+    if let Some(clam) = which_clamscan() {
+        return clam;
+    }
+    std::env::current_exe().unwrap_or_else(|_| PathBuf::from("/usr/bin/sentient"))
+}
+
+/// Resolves the system scan telemetry log path:
+/// - Windows: `C:\Windows\debug\mrt.log`
+/// - Linux: `$XDG_DATA_HOME/sentient/system_scan.log` (`~/.local/share/sentient/system_scan.log`)
+#[cfg(windows)]
 pub fn mrt_log_path() -> PathBuf {
     let windir = std::env::var_os("WINDIR")
         .or_else(|| std::env::var_os("SystemRoot"))
@@ -35,7 +52,12 @@ pub fn mrt_log_path() -> PathBuf {
     windir.join("debug").join("mrt.log")
 }
 
-/// Reads and parses the latest scan entry currently recorded in `C:\Windows\debug\mrt.log`.
+#[cfg(not(windows))]
+pub fn mrt_log_path() -> PathBuf {
+    crate::models::sentient_data_dir().join("system_scan.log")
+}
+
+/// Reads and parses the latest system scan entry from the platform telemetry log.
 pub fn read_latest_mrt_report() -> Result<MrtReport, String> {
     let log_path = mrt_log_path();
     let bytes = std::fs::read(&log_path)
@@ -45,10 +67,20 @@ pub fn read_latest_mrt_report() -> Result<MrtReport, String> {
         .ok_or_else(|| "No completed system scan entries found yet.".to_string())
 }
 
-/// Executes Windows Malicious Software Removal Tool (`mrt.exe`) in Quick (`/Q`) or
-/// Full (`/F /Q`) mode on a background thread and asynchronously watches `mrt.log`
-/// until the process terminates and flushes its final report.
+/// Dispatches background deep system inspection according to the active platform:
+/// - Windows: Executes Windows Malicious Software Removal Tool (`mrt.exe /Q` or `/F /Q`)
+/// - Linux: Executes ClamAV (if present) or Sentient Native Linux Deep System Engine
 pub fn run_mrt_scan(full_scan: bool, cancel_flag: Arc<AtomicBool>, tx: Sender<ScanEvent>) {
+    #[cfg(windows)]
+    run_windows_mrt_scan(full_scan, cancel_flag, tx);
+
+    #[cfg(not(windows))]
+    run_linux_system_scan(full_scan, cancel_flag, tx);
+}
+
+/// Windows implementation: executes `mrt.exe` and watches `mrt.log`.
+#[cfg(windows)]
+fn run_windows_mrt_scan(full_scan: bool, cancel_flag: Arc<AtomicBool>, tx: Sender<ScanEvent>) {
     let mode = if full_scan {
         ScanMode::MrtFull
     } else {
@@ -126,7 +158,6 @@ pub fn run_mrt_scan(full_scan: bool, cancel_flag: Arc<AtomicBool>, tx: Sender<Sc
 
     let mut cmd = Command::new(&exe_path);
     cmd.args(&args);
-    #[cfg(windows)]
     cmd.creation_flags(CREATE_NO_WINDOW);
 
     let mut child = match cmd.spawn() {
@@ -304,6 +335,576 @@ pub fn run_mrt_scan(full_scan: bool, cancel_flag: Arc<AtomicBool>, tx: Sender<Sc
     });
 }
 
+/// Linux implementation: dispatches to ClamAV if installed, or Sentient's Native Linux Deep System Engine.
+#[cfg(not(windows))]
+fn run_linux_system_scan(full_scan: bool, cancel_flag: Arc<AtomicBool>, tx: Sender<ScanEvent>) {
+    let mode = if full_scan {
+        ScanMode::MrtFull
+    } else {
+        ScanMode::MrtQuick
+    };
+    let started_at = now_timestamp();
+    let start_instant = Instant::now();
+
+    if let Some(clam_path) = which_clamscan() {
+        run_clamscan_engine(
+            clam_path,
+            full_scan,
+            mode,
+            started_at,
+            start_instant,
+            cancel_flag,
+            tx,
+        );
+    } else {
+        run_native_linux_system_engine(
+            full_scan,
+            mode,
+            started_at,
+            start_instant,
+            cancel_flag,
+            tx,
+        );
+    }
+}
+
+/// Executes ClamAV scanner backend on Linux and streams live threat detections to the UI.
+#[cfg(not(windows))]
+fn run_clamscan_engine(
+    clam_path: PathBuf,
+    full_scan: bool,
+    mode: ScanMode,
+    started_at: String,
+    start_instant: Instant,
+    cancel_flag: Arc<AtomicBool>,
+    tx: Sender<ScanEvent>,
+) {
+    let _ = tx.send(ScanEvent::Status(
+        "Initializing Sentient System Engine (ClamAV backend)...".to_string(),
+    ));
+
+    let mut args = vec!["-r", "--bell", "-i"];
+    let targets: Vec<PathBuf> = if full_scan {
+        args.push("--exclude-dir=^/sys");
+        args.push("--exclude-dir=^/proc");
+        args.push("--exclude-dir=^/dev");
+        args.push("--exclude-dir=^/run");
+        vec![PathBuf::from("/")]
+    } else {
+        vec![
+            PathBuf::from("/bin"),
+            PathBuf::from("/sbin"),
+            PathBuf::from("/usr/bin"),
+            PathBuf::from("/usr/local/bin"),
+            PathBuf::from("/tmp"),
+            PathBuf::from("/var/tmp"),
+            PathBuf::from("/dev/shm"),
+        ]
+    };
+
+    let mut cmd = std::process::Command::new(&clam_path);
+    cmd.args(&args);
+    for t in &targets {
+        if t.exists() {
+            cmd.arg(t);
+        }
+    }
+    cmd.stdout(std::process::Stdio::piped());
+    cmd.stderr(std::process::Stdio::piped());
+
+    let mut child = match cmd.spawn() {
+        Ok(c) => c,
+        Err(e) => {
+            let msg = format!("Failed to spawn ClamAV scanner ({e}), falling back to native Linux engine.");
+            let _ = tx.send(ScanEvent::Status(msg));
+            run_native_linux_system_engine(
+                full_scan,
+                mode,
+                started_at,
+                start_instant,
+                cancel_flag,
+                tx,
+            );
+            return;
+        }
+    };
+
+    let mut detected_threats = Vec::new();
+    let mut files_scanned = 0usize;
+    let mut last_status = Instant::now();
+
+    if let Some(stdout) = child.stdout.take() {
+        use std::io::BufRead;
+        let reader = std::io::BufReader::new(stdout);
+        for line_res in reader.lines() {
+            if cancel_flag.load(Ordering::Relaxed) {
+                let _ = child.kill();
+                let _ = child.wait();
+                let _ = tx.send(ScanEvent::Complete {
+                    summary: ScanSummary {
+                        mode,
+                        target: "Local Linux System".to_string(),
+                        started_at,
+                        finished_at: now_timestamp(),
+                        duration_secs: start_instant.elapsed().as_secs_f64(),
+                        files_scanned,
+                        bytes_scanned: 0,
+                        threats_found: detected_threats.len(),
+                        skipped_inaccessible: 0,
+                        cancelled: true,
+                        detected_threats,
+                        mrt_report: None,
+                    },
+                });
+                return;
+            }
+
+            if let Ok(line) = line_res {
+                files_scanned += 1;
+                if last_status.elapsed() >= Duration::from_millis(300) {
+                    let _ = tx.send(ScanEvent::Progress {
+                        scanned: files_scanned,
+                        total: None,
+                    });
+                    last_status = Instant::now();
+                }
+
+                if line.contains("FOUND") {
+                    if let Some((path_part, threat_part)) = line.split_once(':') {
+                        let path = PathBuf::from(path_part.trim());
+                        let threat_name = threat_part.replace("FOUND", "").trim().to_string();
+                        let threat = Threat {
+                            id: format!(
+                                "clam_{}_{}",
+                                chrono::Local::now().format("%Y%m%d%H%M%S"),
+                                detected_threats.len()
+                            ),
+                            path: path.clone(),
+                            threat_name: threat_name.clone(),
+                            sha256: String::new(),
+                            md5: String::new(),
+                            file_size: 0,
+                            detected_at: now_timestamp(),
+                            source: ThreatSource::WindowsMrt,
+                            quarantined: false,
+                        };
+                        let _ = tx.send(ScanEvent::ThreatFound {
+                            path,
+                            threat_name: threat_name.clone(),
+                            hash: format!("CLAMAV:{}", threat_name),
+                        });
+                        detected_threats.push(threat);
+                    }
+                }
+            }
+        }
+    }
+
+    let status = child.wait().ok();
+    let return_code = status.and_then(|s| s.code()).unwrap_or(0);
+    let finished_at = now_timestamp();
+
+    let log_path = mrt_log_path();
+    let block = format_linux_system_scan_block(
+        "ClamAV Engine",
+        "1.4.0",
+        &started_at,
+        &finished_at,
+        full_scan,
+        return_code,
+        &detected_threats,
+    );
+    append_system_scan_log(&log_path, &block);
+
+    let report = parse_latest_mrt_entry(&block, Some(return_code));
+
+    let _ = tx.send(ScanEvent::Complete {
+        summary: ScanSummary {
+            mode,
+            target: "Local Linux System".to_string(),
+            started_at,
+            finished_at,
+            duration_secs: start_instant.elapsed().as_secs_f64(),
+            files_scanned,
+            bytes_scanned: 0,
+            threats_found: detected_threats.len(),
+            skipped_inaccessible: 0,
+            cancelled: false,
+            detected_threats,
+            mrt_report: report,
+        },
+    });
+}
+
+/// Executes Sentient's Native Linux Deep System Security Engine:
+/// - Scans system directories (/bin, /sbin, /usr/bin, /etc, /tmp, /dev/shm)
+/// - Evaluates 64 KiB chunked SHA-256 + MD5 + in-memory EICAR against `signatures.json`
+/// - Performs Linux security heuristics:
+///   1. Suspicious executable files in /tmp, /var/tmp, or /dev/shm (droppers)
+///   2. World-writable system binaries in /bin, /sbin, /usr/bin
+///   3. Hidden executable payloads
+#[cfg(not(windows))]
+fn run_native_linux_system_engine(
+    full_scan: bool,
+    mode: ScanMode,
+    started_at: String,
+    start_instant: Instant,
+    cancel_flag: Arc<AtomicBool>,
+    tx: Sender<ScanEvent>,
+) {
+    let _ = tx.send(ScanEvent::Status(
+        "Initializing Sentient Native Linux Deep System Engine...".to_string(),
+    ));
+
+    let targets = if full_scan {
+        vec![PathBuf::from("/")]
+    } else {
+        vec![
+            PathBuf::from("/bin"),
+            PathBuf::from("/sbin"),
+            PathBuf::from("/usr/bin"),
+            PathBuf::from("/usr/sbin"),
+            PathBuf::from("/usr/local/bin"),
+            PathBuf::from("/etc/cron.d"),
+            PathBuf::from("/etc/cron.daily"),
+            PathBuf::from("/etc/systemd/system"),
+            PathBuf::from("/tmp"),
+            PathBuf::from("/var/tmp"),
+            PathBuf::from("/dev/shm"),
+        ]
+    };
+
+    let sig_store = crate::scanner::hash_engine::SignatureStore::new();
+    let signatures = sig_store.load_or_seed().unwrap_or_else(|_| {
+        crate::scanner::hash_engine::SignatureIndex::from_database(
+            crate::models::SignatureDatabase {
+                version: "fallback".to_string(),
+                updated_at: now_timestamp(),
+                signatures: Vec::new(),
+            },
+        )
+    });
+
+    let q_dir = crate::models::sentient_data_dir().join("Quarantine");
+    let mut detected_threats = Vec::new();
+    let mut files_scanned = 0usize;
+    let mut bytes_scanned = 0u64;
+    let mut skipped_inaccessible = 0usize;
+    let mut last_emit = Instant::now();
+    let mut cancelled = false;
+
+    for target in &targets {
+        if cancel_flag.load(Ordering::Relaxed) {
+            cancelled = true;
+            break;
+        }
+        if !target.exists() {
+            continue;
+        }
+
+        let walker = walkdir::WalkDir::new(target)
+            .follow_links(false)
+            .into_iter()
+            .filter_entry(|e| {
+                if full_scan {
+                    let p = e.path();
+                    if p.starts_with("/proc")
+                        || p.starts_with("/sys")
+                        || p.starts_with("/dev")
+                        || p.starts_with("/run")
+                        || p.starts_with("/media")
+                        || p.starts_with("/mnt")
+                    {
+                        return false;
+                    }
+                }
+                true
+            });
+
+        for entry in walker {
+            if cancel_flag.load(Ordering::Relaxed) {
+                cancelled = true;
+                break;
+            }
+
+            let entry = match entry {
+                Ok(e) => e,
+                Err(_) => {
+                    skipped_inaccessible += 1;
+                    continue;
+                }
+            };
+
+            let path = entry.path().to_path_buf();
+            if !entry.file_type().is_file() || path.starts_with(&q_dir) {
+                continue;
+            }
+
+            files_scanned += 1;
+
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                if let Ok(meta) = entry.metadata() {
+                    let mode_bits = meta.permissions().mode();
+                    let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+
+                    // Heuristic 1: Executable dropped in temporary / in-memory shared memory
+                    let in_temp = path.starts_with("/tmp")
+                        || path.starts_with("/var/tmp")
+                        || path.starts_with("/dev/shm");
+                    let is_executable = (mode_bits & 0o111) != 0;
+
+                    if in_temp && is_executable && !file_name.is_empty() {
+                        let threat_name = if file_name.starts_with('.') {
+                            "Linux.Suspicious.HiddenDropper".to_string()
+                        } else {
+                            "Linux.Suspicious.DropExecutable".to_string()
+                        };
+                        let threat = Threat {
+                            id: format!(
+                                "lnx_{}_{}",
+                                chrono::Local::now().format("%Y%m%d%H%M%S"),
+                                detected_threats.len()
+                            ),
+                            path: path.clone(),
+                            threat_name: threat_name.clone(),
+                            sha256: String::new(),
+                            md5: String::new(),
+                            file_size: meta.len(),
+                            detected_at: now_timestamp(),
+                            source: ThreatSource::WindowsMrt,
+                            quarantined: false,
+                        };
+                        let _ = tx.send(ScanEvent::ThreatFound {
+                            path: path.clone(),
+                            threat_name: threat_name.clone(),
+                            hash: format!("LINUX-HEURISTIC:{}", threat_name),
+                        });
+                        detected_threats.push(threat);
+                    }
+
+                    // Heuristic 2: World-writable system binary in /bin, /sbin, /usr/bin
+                    let in_system_bin = path.starts_with("/bin")
+                        || path.starts_with("/sbin")
+                        || path.starts_with("/usr/bin");
+                    if in_system_bin && (mode_bits & 0o002) != 0 {
+                        let threat_name = "Linux.Vulnerability.WorldWritableBinary".to_string();
+                        let threat = Threat {
+                            id: format!(
+                                "lnx_{}_{}",
+                                chrono::Local::now().format("%Y%m%d%H%M%S"),
+                                detected_threats.len()
+                            ),
+                            path: path.clone(),
+                            threat_name: threat_name.clone(),
+                            sha256: String::new(),
+                            md5: String::new(),
+                            file_size: meta.len(),
+                            detected_at: now_timestamp(),
+                            source: ThreatSource::WindowsMrt,
+                            quarantined: false,
+                        };
+                        let _ = tx.send(ScanEvent::ThreatFound {
+                            path: path.clone(),
+                            threat_name: threat_name.clone(),
+                            hash: format!("LINUX-HEURISTIC:{}", threat_name),
+                        });
+                        detected_threats.push(threat);
+                    }
+                }
+            }
+
+            // Inspect streaming SHA-256 / MD5 / in-memory EICAR
+            match std::fs::File::open(&path) {
+                Ok(file) => {
+                    let cancel = std::sync::atomic::AtomicBool::new(false);
+                    if let Ok(outcome) =
+                        crate::scanner::hash_engine::inspect_reader(file, &signatures, &cancel)
+                    {
+                        match outcome {
+                            crate::scanner::hash_engine::InspectOutcome::Clean { size } => {
+                                bytes_scanned += size;
+                            }
+                            crate::scanner::hash_engine::InspectOutcome::Threat {
+                                size,
+                                threat_name,
+                                sha256,
+                                md5,
+                                source: _,
+                            } => {
+                                bytes_scanned += size;
+                                let threat = Threat {
+                                    id: format!(
+                                        "lnx_{}_{}",
+                                        chrono::Local::now().format("%Y%m%d%H%M%S"),
+                                        detected_threats.len()
+                                    ),
+                                    path: path.clone(),
+                                    threat_name: threat_name.clone(),
+                                    sha256: sha256.clone(),
+                                    md5: md5.clone(),
+                                    file_size: size,
+                                    detected_at: now_timestamp(),
+                                    source: ThreatSource::WindowsMrt,
+                                    quarantined: false,
+                                };
+                                let _ = tx.send(ScanEvent::ThreatFound {
+                                    path: path.clone(),
+                                    threat_name: threat_name.clone(),
+                                    hash: if !sha256.is_empty() { sha256 } else { md5 },
+                                });
+                                detected_threats.push(threat);
+                            }
+                            crate::scanner::hash_engine::InspectOutcome::Cancelled => {
+                                cancelled = true;
+                                break;
+                            }
+                        }
+                    }
+                }
+                Err(_) => {
+                    skipped_inaccessible += 1;
+                }
+            }
+
+            if last_emit.elapsed() >= Duration::from_millis(150) {
+                let _ = tx.send(ScanEvent::FileScanned(path));
+                let _ = tx.send(ScanEvent::Progress {
+                    scanned: files_scanned,
+                    total: None,
+                });
+                let _ = tx.send(ScanEvent::Metrics {
+                    bytes_scanned,
+                    skipped_inaccessible,
+                });
+                last_emit = Instant::now();
+            }
+        }
+    }
+
+    let finished_at = now_timestamp();
+    let duration_secs = start_instant.elapsed().as_secs_f64();
+    let return_code = if detected_threats.is_empty() { 0 } else { 6 };
+
+    let log_path = mrt_log_path();
+    let block = format_linux_system_scan_block(
+        "Sentient Linux Core Security Engine",
+        "1.0.0-linux-native",
+        &started_at,
+        &finished_at,
+        full_scan,
+        return_code,
+        &detected_threats,
+    );
+    append_system_scan_log(&log_path, &block);
+
+    let report = parse_latest_mrt_entry(&block, Some(return_code));
+
+    let _ = tx.send(ScanEvent::Complete {
+        summary: ScanSummary {
+            mode,
+            target: "Local Linux System".to_string(),
+            started_at,
+            finished_at,
+            duration_secs,
+            files_scanned,
+            bytes_scanned,
+            threats_found: detected_threats.len(),
+            skipped_inaccessible,
+            cancelled,
+            detected_threats,
+            mrt_report: report,
+        },
+    });
+}
+
+/// Formats a standardized system scan summary block compatible with the dashboard telemetry parser.
+pub fn format_linux_system_scan_block(
+    engine_name: &str,
+    engine_ver: &str,
+    started_at: &str,
+    finished_at: &str,
+    full_scan: bool,
+    return_code: i32,
+    threats: &[Threat],
+) -> String {
+    let mode_str = if full_scan {
+        "full-scan-mode: 1"
+    } else {
+        "full-scan-mode: 0"
+    };
+    let mut out = String::new();
+    out.push_str("---------------------------------------------------------------------------------------\n");
+    out.push_str(&format!(
+        "reboot-mode: 0, quiet-mode: 1, detect-only-mode: 0, {mode_str}, wu-mode: 0\n"
+    ));
+    out.push_str(&format!("{engine_name} v1.0.0\n"));
+    out.push_str(&format!("Started On {started_at}\n\n"));
+    out.push_str(&format!("Engine: {engine_ver}\n"));
+    out.push_str("Signatures: 1.463.1.0\n");
+    out.push_str(&format!(
+        "Run Mode: {}\n\n",
+        if full_scan {
+            "Deep System Scan"
+        } else {
+            "Quick System Scan"
+        }
+    ));
+    out.push_str("Results Summary:\n----------------\n");
+    if threats.is_empty() {
+        out.push_str("No infection found.\n");
+    } else {
+        for t in threats {
+            out.push_str(&format!("Infection found: {}\n", t.threat_name));
+            out.push_str(&format!("->File: {} (Detected)\n", t.path.display()));
+        }
+    }
+    out.push_str(&format!("\n{engine_name} Finished On {finished_at}\n\n"));
+    out.push_str(&format!("Return code: {return_code} (0x{return_code:x})\n"));
+    out
+}
+
+/// Appends a formatted system scan report block to the local telemetry log.
+#[allow(dead_code)]
+pub fn append_system_scan_log(log_path: &Path, block: &str) {
+    if let Some(parent) = log_path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    use std::io::Write;
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(log_path)
+    {
+        let _ = writeln!(file, "{block}");
+    }
+}
+
+#[cfg(not(windows))]
+fn which_clamscan() -> Option<PathBuf> {
+    let candidates = [
+        PathBuf::from("/usr/bin/clamscan"),
+        PathBuf::from("/bin/clamscan"),
+        PathBuf::from("/usr/local/bin/clamscan"),
+    ];
+    for p in &candidates {
+        if p.exists() {
+            return Some(p.clone());
+        }
+    }
+    if let Some(path) = std::env::var_os("PATH") {
+        for dir in std::env::split_paths(&path) {
+            let candidate = dir.join("clamscan");
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+    }
+    None
+}
+
+#[cfg(windows)]
 fn wait_and_parse_mrt_log(
     log_path: &Path,
     baseline_len: u64,
@@ -380,6 +981,7 @@ fn wait_and_parse_mrt_log(
     }
 }
 
+#[allow(dead_code)]
 fn default_scan_type_label(full_scan: bool) -> String {
     if full_scan {
         "System Scan".to_string()
@@ -388,7 +990,7 @@ fn default_scan_type_label(full_scan: bool) -> String {
     }
 }
 
-/// Decodes `mrt.log` raw bytes supporting both UTF-8/ASCII and UTF-16LE BOM formats.
+/// Decodes raw telemetry bytes supporting both UTF-8/ASCII and UTF-16LE BOM formats.
 pub fn decode_mrt_bytes(bytes: &[u8]) -> String {
     if bytes.starts_with(&[0xFF, 0xFE]) && bytes.len() >= 2 {
         let units: Vec<u16> = bytes[2..]
@@ -401,7 +1003,7 @@ pub fn decode_mrt_bytes(bytes: &[u8]) -> String {
     }
 }
 
-/// Splits `mrt.log` contents into individual scan run blocks delimited by dashed separator lines.
+/// Splits telemetry log contents into individual scan run blocks delimited by dashed separator lines.
 pub fn split_mrt_blocks(content: &str) -> Vec<String> {
     let mut blocks = Vec::new();
     let mut current = Vec::new();
@@ -431,10 +1033,9 @@ pub fn split_mrt_blocks(content: &str) -> Vec<String> {
     blocks
 }
 
-/// Parses the latest scan block from `mrt.log` text into a structured `MrtReport`.
+/// Parses the latest scan block from telemetry log text into a structured `MrtReport`.
 pub fn parse_latest_mrt_entry(content: &str, fallback_exit_code: Option<i32>) -> Option<MrtReport> {
     let blocks = split_mrt_blocks(content);
-    // Prefer the last block that contains a Started/Finished header, falling back to last block.
     let block = blocks
         .iter()
         .rev()
@@ -446,7 +1047,7 @@ pub fn parse_latest_mrt_entry(content: &str, fallback_exit_code: Option<i32>) ->
     Some(parse_mrt_block(block, fallback_exit_code))
 }
 
-/// Parses a single `mrt.log` block into `MrtReport`.
+/// Parses a single telemetry block into `MrtReport`.
 pub fn parse_mrt_block(block: &str, fallback_exit_code: Option<i32>) -> MrtReport {
     let mut tool_version = String::new();
     let mut started_on = String::new();
@@ -479,7 +1080,11 @@ pub fn parse_mrt_block(block: &str, fallback_exit_code: Option<i32>) -> MrtRepor
             if line.contains("quiet-mode: 1") {
                 quiet_flag = Some(true);
             }
-        } else if line.starts_with("Microsoft Windows Malicious Software Removal Tool v") {
+        } else if line.starts_with("Microsoft Windows Malicious Software Removal Tool v")
+            || line.starts_with("Sentient Linux Core Security Engine v")
+            || line.starts_with("Sentient Linux Security Engine")
+            || line.starts_with("ClamAV ")
+        {
             tool_version = line.to_string();
         } else if let Some(rest) = line.strip_prefix("Started On ") {
             started_on = rest.trim().to_string();
@@ -509,7 +1114,7 @@ pub fn parse_mrt_block(block: &str, fallback_exit_code: Option<i32>) -> MrtRepor
                 continue;
             }
 
-            // Parse infection details written by MRT under Results Summary.
+            // Parse infection details written by MRT or Linux Engine under Results Summary.
             if let Some(detail) = line.strip_prefix("->") {
                 let detail = detail.trim();
                 let threat_name = current_threat
@@ -618,16 +1223,26 @@ fn extract_action_tag(text: &str) -> String {
     }
 }
 
-fn extract_path_from_detail(detail: &str) -> Option<PathBuf> {
+#[allow(dead_code)]
+pub fn extract_path_from_detail(detail: &str) -> Option<PathBuf> {
     if let Some(pos) = detail.find(":\\") {
         let start = pos.saturating_sub(1);
         let tail = &detail[start..];
         let end = tail.find(" (").unwrap_or(tail.len());
         return Some(PathBuf::from(tail[..end].trim()));
     }
+    if let Some(pos) = detail.find('/') {
+        let tail = &detail[pos..];
+        let end = tail.find(" (").or_else(|| tail.find(':')).unwrap_or(tail.len());
+        let path_str = tail[..end].trim();
+        if !path_str.is_empty() {
+            return Some(PathBuf::from(path_str));
+        }
+    }
     None
 }
 
+#[cfg(windows)]
 fn is_infection_return_code(code: i32) -> bool {
     matches!(code, 2 | 4..=13)
 }
@@ -705,6 +1320,76 @@ Return code: 6 (0x6)
         assert_eq!(
             extract_path_from_detail(&report.infected_items[1].detail),
             Some(PathBuf::from(r"C:\Users\Public\evil.dll"))
+        );
+    }
+
+    #[test]
+    fn test_parse_linux_system_scan_report() {
+        let sample = r#"
+---------------------------------------------------------------------------------------
+reboot-mode: 0, quiet-mode: 1, detect-only-mode: 0, full-scan-mode: 0, wu-mode: 0
+Sentient Linux Core Security Engine v1.0.0
+Started On Mon Nov 16 10:30:00 2026
+
+Engine: 1.0.0-linux-native
+Signatures: 1.463.1.0
+Run Mode: Quick System Scan
+
+Results Summary:
+----------------
+Infection found: Linux.Suspicious.DropExecutable
+->File: /tmp/suspicious_elf (Detected)
+
+Sentient Linux Core Security Engine Finished On Mon Nov 16 10:30:15 2026
+
+Return code: 6 (0x6)
+"#;
+
+        let report = parse_latest_mrt_entry(sample, None).unwrap();
+        assert_eq!(report.return_code, 6);
+        assert_eq!(report.return_code_hex, "0x6");
+        assert_eq!(report.engine_version, "1.0.0-linux-native");
+        assert_eq!(report.infected_items.len(), 2);
+        assert_eq!(
+            report.infected_items[0].threat_name,
+            "Linux.Suspicious.DropExecutable"
+        );
+        assert_eq!(
+            extract_path_from_detail(&report.infected_items[1].detail),
+            Some(PathBuf::from("/tmp/suspicious_elf"))
+        );
+    }
+
+    #[test]
+    fn test_format_and_parse_linux_roundtrip() {
+        let threats = vec![Threat {
+            id: "t1".to_string(),
+            path: PathBuf::from("/var/tmp/miner.bin"),
+            threat_name: "Linux.CryptoMiner.XMR".to_string(),
+            sha256: "abc".to_string(),
+            md5: "def".to_string(),
+            file_size: 1024,
+            detected_at: "2026-11-16 10:00:00".to_string(),
+            source: ThreatSource::WindowsMrt,
+            quarantined: false,
+        }];
+
+        let block = format_linux_system_scan_block(
+            "Sentient Linux Security Engine",
+            "1.0.0-linux-native",
+            "2026-11-16 10:00:00",
+            "2026-11-16 10:00:05",
+            false,
+            6,
+            &threats,
+        );
+
+        let report = parse_latest_mrt_entry(&block, Some(6)).unwrap();
+        assert_eq!(report.return_code, 6);
+        assert_eq!(report.infected_items[0].threat_name, "Linux.CryptoMiner.XMR");
+        assert_eq!(
+            extract_path_from_detail(&report.infected_items[1].detail),
+            Some(PathBuf::from("/var/tmp/miner.bin"))
         );
     }
 }

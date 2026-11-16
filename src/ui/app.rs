@@ -180,8 +180,15 @@ impl SentientApp {
         let next_log_id = logs.iter().map(|l| l.id).max().unwrap_or(0) + 1;
 
         let default_folder = std::env::var_os("USERPROFILE")
+            .or_else(|| std::env::var_os("HOME"))
             .map(|p| PathBuf::from(p).join("Downloads").display().to_string())
-            .unwrap_or_else(|| r"C:\Users".to_string());
+            .unwrap_or_else(|| {
+                if cfg!(windows) {
+                    r"C:\Users".to_string()
+                } else {
+                    "/home".to_string()
+                }
+            });
 
         let mut app = Self {
             active_tab: NavTab::Dashboard,
@@ -816,13 +823,13 @@ impl SentientApp {
             let (rect, _) = ui.allocate_exact_size(halo_size, egui::Sense::hover());
             let center = rect.center();
             ui.painter()
-                .circle_filled(center, 54.0, Color32::from_rgb(20, 29, 46));
+                .circle_filled(center, 54.0, Color32::from_rgb(52, 68, 92));
             ui.painter()
-                .circle_stroke(center, 54.0, Stroke::new(1.5, BORDER_BRIGHT));
+                .circle_stroke(center, 54.0, Stroke::new(1.5, ACCENT_CYAN));
             ui.painter().circle_stroke(
                 center,
                 50.0,
-                Stroke::new(1.0, Color32::from_rgba_unmultiplied(34, 211, 238, 60)),
+                Stroke::new(1.0, Color32::from_rgba_unmultiplied(34, 211, 238, 80)),
             );
 
             if let Some(ref tex) = self.logo_texture {
@@ -1479,8 +1486,8 @@ impl SentientApp {
                 ui.add_space(8.0);
                 ui.horizontal_wrapped(|ui| {
                     ui.label(RichText::new("Quick targets:").size(11.5).color(TEXT_MUTED));
-                    if let Some(profile) = std::env::var_os("USERPROFILE") {
-                        let home = PathBuf::from(profile);
+                    if let Some(home_os) = std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME")) {
+                        let home = PathBuf::from(home_os);
                         if ui.small_button("Downloads").clicked() {
                             self.custom_folder_input =
                                 home.join("Downloads").display().to_string();
@@ -1493,9 +1500,13 @@ impl SentientApp {
                                 home.join("Documents").display().to_string();
                         }
                     }
-                    if let Some(temp) = std::env::var_os("TEMP") {
+                    if let Some(temp) = std::env::var_os("TEMP").or_else(|| std::env::var_os("TMPDIR")) {
                         if ui.small_button("Temp").clicked() {
                             self.custom_folder_input = PathBuf::from(temp).display().to_string();
+                        }
+                    } else if !cfg!(windows) {
+                        if ui.small_button("/tmp").clicked() {
+                            self.custom_folder_input = "/tmp".to_string();
                         }
                     }
                 });
