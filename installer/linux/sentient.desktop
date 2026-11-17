@@ -1,0 +1,17 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Sentient
+GenericName=Endpoint Defense & Threat Scanner
+Comment=High-Performance Offline Antivirus & Threat Sentinel
+Exec=/usr/local/bin/sentient %F
+Icon=sentient
+Terminal=false
+StartupNotify=true
+Categories=Security;System;Utility;
+Keywords=antivirus;malware;security;scanner;sentinel;yara;threat;
+Actions=ElevatedScan;
+
+[Desktop Action ElevatedScan]
+Name=Run Sentient as Administrator (Root)
+Exec=pkexec /usr/local/bin/sentient

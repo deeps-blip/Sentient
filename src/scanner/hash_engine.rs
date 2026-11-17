@@ -6,7 +6,7 @@ use crossbeam_channel::Sender;
 use md5::Md5;
 use rayon::prelude::*;
 use sha2::{Digest, Sha256};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
@@ -152,6 +152,105 @@ impl SignatureStore {
             .map_err(|e| format!("Failed to save '{}': {e}", self.path.display()))?;
         index = SignatureIndex::from_database(db);
         Ok(index)
+    }
+
+    /// Merges new threat intelligence signatures into the local database.
+    /// This function strictly accepts only threat signatures (name, hashes, severity, description),
+    /// ensuring updates affect ONLY the threat intelligence / hash database and never executable code.
+    pub fn update_threat_intelligence(
+        &self,
+        incoming: SignatureDatabase,
+    ) -> Result<(SignatureIndex, usize), String> {
+        let mut index = self.load_or_seed()?;
+        let mut db = index.to_database();
+
+        let mut existing_sha = HashSet::new();
+        let mut existing_md5 = HashSet::new();
+        for s in &db.signatures {
+            let sha = s.sha256.trim().to_ascii_lowercase();
+            if !sha.is_empty() {
+                existing_sha.insert(sha);
+            }
+            let md5 = s.md5.trim().to_ascii_lowercase();
+            if !md5.is_empty() {
+                existing_md5.insert(md5);
+            }
+        }
+
+        let mut added_count = 0usize;
+        for s in incoming.signatures {
+            let sha = s.sha256.trim().to_ascii_lowercase();
+            let md5 = s.md5.trim().to_ascii_lowercase();
+
+            // Validate that signature has at least one valid hash
+            let has_sha = sha.len() == 64 && sha.chars().all(|c| c.is_ascii_hexdigit());
+            let has_md5 = md5.len() == 32 && md5.chars().all(|c| c.is_ascii_hexdigit());
+
+            if !has_sha && !has_md5 {
+                continue;
+            }
+
+            // Deduplicate
+            let sha_exists = !sha.is_empty() && existing_sha.contains(&sha);
+            let md5_exists = !md5.is_empty() && existing_md5.contains(&md5);
+
+            if !sha_exists && !md5_exists {
+                if has_sha {
+                    existing_sha.insert(sha.clone());
+                }
+                if has_md5 {
+                    existing_md5.insert(md5.clone());
+                }
+                db.signatures.push(ThreatSignature {
+                    name: s.name,
+                    sha256: sha,
+                    md5,
+                    severity: if s.severity.is_empty() {
+                        "High".to_string()
+                    } else {
+                        s.severity
+                    },
+                    description: s.description,
+                });
+                added_count += 1;
+            }
+        }
+
+        if added_count > 0 {
+            db.updated_at = now_timestamp();
+            db.version = incoming.version;
+            let json = serde_json::to_string_pretty(&db)
+                .map_err(|e| format!("Failed to serialize updated signatures.json: {e}"))?;
+            fs::write(&self.path, json)
+                .map_err(|e| format!("Failed to save '{}': {e}", self.path.display()))?;
+            index = SignatureIndex::from_database(db);
+        }
+
+        Ok((index, added_count))
+    }
+
+    /// Imports threat intelligence from an external JSON file (e.g. from an offline USB drive,
+    /// air-gapped threat feed, or local mirror).
+    pub fn import_threat_intel_file(&self, path: &Path) -> Result<(SignatureIndex, usize), String> {
+        let content = fs::read_to_string(path)
+            .map_err(|e| format!("Failed to read threat intelligence file '{}': {e}", path.display()))?;
+        let incoming: SignatureDatabase = serde_json::from_str(&content)
+            .map_err(|e| format!("Invalid threat intelligence format in '{}': {e}", path.display()))?;
+        self.update_threat_intelligence(incoming)
+    }
+
+    /// Synchronizes threat intelligence with the local seed / workspace definitions.
+    pub fn sync_with_embedded_or_workspace_intel(&self) -> Result<(SignatureIndex, usize), String> {
+        let local_seed = Path::new("signatures.json");
+        let content = if local_seed.exists() {
+            fs::read_to_string(local_seed)
+                .unwrap_or_else(|_| DEFAULT_SIGNATURES_JSON.to_string())
+        } else {
+            DEFAULT_SIGNATURES_JSON.to_string()
+        };
+        let incoming: SignatureDatabase = serde_json::from_str(&content)
+            .map_err(|e| format!("Failed to parse definitions: {e}"))?;
+        self.update_threat_intelligence(incoming)
     }
 }
 
@@ -766,5 +865,97 @@ mod tests {
         for r in &roots {
             assert!(r.exists(), "Returned root '{}' must exist", r.display());
         }
+    }
+
+    #[test]
+    fn test_embedded_database_contains_curated_threats() {
+        let db: SignatureDatabase = serde_json::from_str(DEFAULT_SIGNATURES_JSON)
+            .expect("Embedded signatures.json must parse into SignatureDatabase");
+        assert!(
+            db.signatures.len() >= 40,
+            "Expected at least 40 signatures in database, found {}",
+            db.signatures.len()
+        );
+
+        let index = SignatureIndex::from_database(db);
+
+        // Verify key malware hashes across Windows, Linux, Ransomware, Stealers, and Wipers
+        let test_cases = [
+            ("24d004a104d4d54034dbcffc2a4b19a11f39008a575aa614ea04703480b1022c", "Ransom.Win32.WannaCry.Dropper"),
+            ("d949f390b1477759ad2c8c459ca2a229ddac1586eb8c156828edb682650ee48b", "Ransom.Win32.LockBit3.Black"),
+            ("b6754b2c129487c6999be78153406830cb85542f7c0062e24560b45780518744", "Backdoor.Linux.Mirai.Botnet"),
+            ("b25752da1b6814e4b52b31122a6136d89e47adcf8c764c6767cbdfb307ec29d5", "Miner.Linux.Kinsing.Dropper"),
+            ("78e5f2cf29be41f64f89be963fa1ec32050e82c16828551c6c8be48b7880df98", "Backdoor.Linux.BPFDoor.Implant"),
+            ("3b8cae6a4b3d7cc01f8c4456ef184dc07b3d3170e17fb2b5ba45d8b8e88ff593", "Spyware.Win32.RedLine.Stealer"),
+            ("0385e49877b20230242109d6648a09e3ec8e5b90fffae4f8657937ac561c4b73", "Wiper.Win32.HermeticWiper"),
+        ];
+
+        for (sha, expected_name) in test_cases {
+            let matched = index.match_hashes(sha, "");
+            assert!(
+                matched.is_some(),
+                "Expected SHA-256 '{sha}' ({expected_name}) to be indexed"
+            );
+            assert_eq!(matched.unwrap().name, expected_name);
+        }
+    }
+
+    #[test]
+    fn test_update_threat_intelligence_strictly_appends_hashes() {
+        let dir = std::env::temp_dir().join("sentient_update_intel_test");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let sig_path = dir.join("signatures.json");
+
+        let store = SignatureStore::with_path(sig_path.clone());
+        let initial = store.load_or_seed().unwrap();
+        let initial_len = initial.len();
+
+        let incoming_db = SignatureDatabase {
+            version: "2026.11.3".to_string(),
+            updated_at: now_timestamp(),
+            signatures: vec![
+                ThreatSignature {
+                    name: "ThreatIntel.New.Variant.X".to_string(),
+                    sha256: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".to_string(),
+                    md5: "11111111111111111111111111111111".to_string(),
+                    severity: "Critical".to_string(),
+                    description: "Offline intelligence feed entry".to_string(),
+                },
+                // Invalid entry with malformed hash (should be filtered out safely)
+                ThreatSignature {
+                    name: "Invalid.Entry".to_string(),
+                    sha256: "short_hash".to_string(),
+                    md5: String::new(),
+                    severity: "Low".to_string(),
+                    description: "Malformed hash".to_string(),
+                },
+            ],
+        };
+
+        let (updated, added) = store.update_threat_intelligence(incoming_db).unwrap();
+        assert_eq!(added, 1, "Only the 1 valid new threat should be added");
+        assert_eq!(updated.len(), initial_len + 1);
+        assert!(updated.match_hashes("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "").is_some());
+
+        // Repeated update with same incoming DB adds 0 (deduplication)
+        let incoming_db2 = SignatureDatabase {
+            version: "2026.11.3".to_string(),
+            updated_at: now_timestamp(),
+            signatures: vec![
+                ThreatSignature {
+                    name: "ThreatIntel.New.Variant.X".to_string(),
+                    sha256: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".to_string(),
+                    md5: "11111111111111111111111111111111".to_string(),
+                    severity: "Critical".to_string(),
+                    description: "Offline intelligence feed entry duplicate".to_string(),
+                },
+            ],
+        };
+        let (updated2, added2) = store.update_threat_intelligence(incoming_db2).unwrap();
+        assert_eq!(added2, 0, "Duplicate hashes must be skipped cleanly");
+        assert_eq!(updated2.len(), updated.len());
+
+        let _ = fs::remove_dir_all(&dir);
     }
 }

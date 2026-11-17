@@ -1,10 +1,17 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod heuristics;
 mod models;
+mod network;
 mod platform;
+mod process;
 mod quarantine;
+mod reports;
 mod scanner;
+mod sentinel;
 mod ui;
+mod usb;
+mod yara;
 
 use eframe::egui;
 use std::sync::Arc;

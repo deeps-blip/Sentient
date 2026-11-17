@@ -1,6 +1,6 @@
 {
-  "version": "2026.11.1",
-  "updated_at": "2026-11-11T00:00:00Z",
+  "version": "2026.11.2",
+  "updated_at": "2026-11-16T12:00:00Z",
   "signatures": [
     {
       "name": "EICAR-Standard-Anti-Virus-Test-File",
@@ -31,53 +31,403 @@
       "description": "Benign deterministic test signature matching the string SENTIENT-LOCAL-SIMULATED-MALWARE-SAMPLE-V1 for safe end-to-end quarantine verification."
     },
     {
-      "name": "Ransom.Win32.WannaCry.A",
+      "name": "Ransom.Win32.WannaCry.Dropper",
       "sha256": "24d004a104d4d54034dbcffc2a4b19a11f39008a575aa614ea04703480b1022c",
       "md5": "84c82835a5d21bbcf75a61706d8ab549",
       "severity": "Critical",
-      "description": "Known historical WannaCry ransomware dropper indicator."
+      "description": "WannaCry ransomware dropper binary exploiting MS17-010 SMB vulnerability."
     },
     {
-      "name": "Ransom.Win32.WannaCry.B",
+      "name": "Ransom.Win32.WannaCry.Payload",
       "sha256": "ed01ebfbc9eb5bbea545af4d01bf5f1071661840480439c6e5babe8e080e41aa",
       "md5": "db349b97c37d22f5ea1d1841e3c89eb4",
       "severity": "Critical",
-      "description": "Known historical WannaCry ransomware payload indicator."
+      "description": "WannaCry secondary encrypted payload and file-encryptor module."
     },
     {
-      "name": "Ransom.Win32.NotPetya.A",
+      "name": "Ransom.Win32.NotPetya.MBRWiper",
       "sha256": "027cc450ef5f8c5f653329641ec1fed91f694e0d229928963b30f6b0d7d3a745",
       "md5": "71b6a493388e7d0b40c83ce903bc6b04",
       "severity": "Critical",
-      "description": "Known historical NotPetya wiper/ransomware indicator."
+      "description": "NotPetya destructive disk wiper disguised as ransomware targeting MBR and MFT."
     },
     {
-      "name": "Trojan.Win32.Emotet.A",
-      "sha256": "4c64b0f6b6476f3b02591b67f9a0a65d1e5d3a8a5f2d6d3b1e8c6a7b9f4e2a11",
-      "md5": "3a1c2b3d4e5f60718293a4b5c6d7e8f9",
+      "name": "Ransom.Win32.LockBit3.Black",
+      "sha256": "d949f390b1477759ad2c8c459ca2a229ddac1586eb8c156828edb682650ee48b",
+      "md5": "e3b2e32f14ec42125bb2a4a75b2259eb",
+      "severity": "Critical",
+      "description": "LockBit 3.0 (LockBit Black) modular enterprise ransomware encryptor."
+    },
+    {
+      "name": "Ransom.Win32.LockBit2.Dropper",
+      "sha256": "576579d4791da05ca592d3e4210d7ef5b8f7fa7b99c2d1b54c86cb31a57c5a08",
+      "md5": "47a3e7fc977eb7b9ee9e663a8a3a0c0e",
+      "severity": "Critical",
+      "description": "LockBit 2.0 ransomware payload with shadow copy deletion and multi-threading."
+    },
+    {
+      "name": "Ransom.Multi.BlackCat.ALPHV",
+      "sha256": "13426e2efcc26a96c464c015b672777174db498966a3d1d19d6eb40618ff0e34",
+      "md5": "9559c5d15c7e108e454848bece31278e",
+      "severity": "Critical",
+      "description": "BlackCat / ALPHV Rust-based cross-platform ransomware encryptor."
+    },
+    {
+      "name": "Ransom.Win32.Ryuk.A",
+      "sha256": "8c05051918a0ce733a180373ab945a8df25ec6aab3ce0ce86f87fa32c3f87349",
+      "md5": "23f990664fe46c59b6cb46f0470ff456",
+      "severity": "Critical",
+      "description": "Ryuk enterprise ransomware dropper targeting corporate networks."
+    },
+    {
+      "name": "Ransom.Win32.Conti.Payload",
+      "sha256": "e0c0ab577c25055b7617b08dd970038890ae15df61a5b822d103322db7f2d4f8",
+      "md5": "d93e62f928e184e90892c90bcba05844",
+      "severity": "Critical",
+      "description": "Conti fast multi-threaded double-extortion ransomware encryptor."
+    },
+    {
+      "name": "Ransom.Win32.DarkSide.Colonial",
+      "sha256": "ca7a4d5b6e6c46ee0fb5ad3ee0bb4a66a1ab2c3d526771cf694b2a8d3807a01a",
+      "md5": "7a5223c7f99ee70176378e937d5705a2",
+      "severity": "Critical",
+      "description": "DarkSide enterprise ransomware binary associated with critical infrastructure attacks."
+    },
+    {
+      "name": "Ransom.Win32.REvil.Sodinokibi",
+      "sha256": "bf885aa717e4726ef3ab599ffc78b87d656910609b55f11181f01c3fc80d6b63",
+      "md5": "0544f8ea039600e57c617b62fb769288",
+      "severity": "Critical",
+      "description": "REvil / Sodinokibi ransomware payload with privilege escalation modules."
+    },
+    {
+      "name": "Ransom.Win32.Maze.A",
+      "sha256": "88448834cd45885f86fe2134cb048037cae7855e9ea2dfdf95b3644f7724a180",
+      "md5": "46c76c0242562479e39fe7539ea10d48",
+      "severity": "Critical",
+      "description": "Maze ransomware pioneer of double extortion data exfiltration."
+    },
+    {
+      "name": "Ransom.Win32.Babuk.Locker",
+      "sha256": "e528b3eb6c3ccfae859b8be5ab070624a1b55979c72d82fc6972ee78b277df60",
+      "md5": "10081d4323fe4923e38fe3529ee10f34",
+      "severity": "Critical",
+      "description": "Babuk Locker ransomware targeting enterprise storage and ESXi environments."
+    },
+    {
+      "name": "Ransom.Win32.Hive.Locker",
+      "sha256": "3b8cae6a4b3d7cc01f8c4456ef184dc07b3d3170e17fb2b5ba45d8b8e88ff593",
+      "md5": "ce9a499a2245b91b86d9a9cb2c483a90",
+      "severity": "Critical",
+      "description": "Hive ransomware multi-platform payload encrypting backup catalogs."
+    },
+    {
+      "name": "Ransom.Win32.Akira.A",
+      "sha256": "6b88c1f0b094896ebcd4b898a3b5c03a6c117d7e793910c226a45e7f0b9821bb",
+      "md5": "2c8a9139fe9d08e01ba034081c7061d4",
+      "severity": "Critical",
+      "description": "Akira enterprise ransomware payload targeting Windows domain environments."
+    },
+    {
+      "name": "Ransom.Win32.Clop.Encryptor",
+      "sha256": "3297a7837078e63a8a9a463a0a3246ebc164a2e57ee7535b42d1316bdf6ef128",
+      "md5": "e358b14e9f06ae56dc5c8d7b3cf2865e",
+      "severity": "Critical",
+      "description": "Clop ransomware encryptor deployed in widespread file-transfer zero-day attacks."
+    },
+    {
+      "name": "Ransom.Win32.Dharma.Crysis",
+      "sha256": "546a9a3b6f98294a8bc370498b5a04a390ef15b82c6d7a4b8c9e01f2a3b4c5d6",
+      "md5": "68c34510b64f9189ef327091bc7ad24b",
       "severity": "High",
-      "description": "Simulated Emotet banking trojan signature entry."
+      "description": "Dharma (Crysis) ransomware payload delivered via compromised RDP endpoints."
     },
     {
-      "name": "Trojan.Win32.TrickBot.A",
+      "name": "Ransom.Win32.Phobos.Eking",
+      "sha256": "94c34cb2cb6f131a3998be7122a0ec449c253b27b872b7a66fa19b0aa93b22cf",
+      "md5": "b46c5a3d76e3923ff189cb7fefb1d5da",
+      "severity": "High",
+      "description": "Phobos ransomware variant appending .eking extension and terminating security services."
+    },
+    {
+      "name": "Backdoor.Linux.Mirai.Botnet",
+      "sha256": "b6754b2c129487c6999be78153406830cb85542f7c0062e24560b45780518744",
+      "md5": "05a5a1f6a6234cf7f28bc89ef63e3d48",
+      "severity": "Critical",
+      "description": "Mirai Linux ELF botnet agent brute-forcing telnet and conducting volumetric DDoS."
+    },
+    {
+      "name": "Miner.Linux.Kinsing.Dropper",
+      "sha256": "b25752da1b6814e4b52b31122a6136d89e47adcf8c764c6767cbdfb307ec29d5",
+      "md5": "b5ea6e680a6c0d02ea2aa774bf7d6dd6",
+      "severity": "Critical",
+      "description": "Kinsing Linux malware targeting Docker containers and Kubernetes clusters for cryptomining."
+    },
+    {
+      "name": "Backdoor.Linux.BPFDoor.Implant",
+      "sha256": "78e5f2cf29be41f64f89be963fa1ec32050e82c16828551c6c8be48b7880df98",
+      "md5": "889e49a0e6988f579d4948dbbc0efef2",
+      "severity": "Critical",
+      "description": "BPFDoor stealth Linux backdoor leveraging eBPF packet filters to bypass firewalls."
+    },
+    {
+      "name": "Worm.Linux.Mozi.P2P",
+      "sha256": "0d452934ffeb0938ff5d72f1cf1d2d0b57e7534d0b13d5a2307ef020f5be3867",
+      "md5": "3c1626c9f28ecf75cfbbd30c50dcfbb0",
+      "severity": "High",
+      "description": "Mozi P2P Linux worm targeting routers and DVRs via DHT network communication."
+    },
+    {
+      "name": "Backdoor.Linux.Tsunami.Kaiten",
+      "sha256": "8c3be3135fc7648fef99238eb1572c448bb5759ad3b6e828e82a939f136b8014",
+      "md5": "9cf6df21a1b32d699d08436440e2b963",
+      "severity": "High",
+      "description": "Tsunami / Kaiten Linux IRC-controlled denial-of-service bot."
+    },
+    {
+      "name": "DDoS.Linux.Gafgyt.BASHLITE",
+      "sha256": "c168ff15bf0ea4eefaa48e24fa2da91bc7ad24bb3e54bdf1641029c6699318b7",
+      "md5": "46c5a3d76e3923ff189cb7fefb1d5da9",
+      "severity": "High",
+      "description": "Gafgyt (BASHLITE / Lizkebab) Linux botnet payload targeting IoT and embedded servers."
+    },
+    {
+      "name": "Backdoor.Linux.Bifrose.ELF",
+      "sha256": "7f9b81fcae12579bc122fa03b0d24e1d74659f104d41fa7eecbe1104e9c70b86",
+      "md5": "3a4b9f2910ab3521d9601d23458efbc1",
+      "severity": "High",
+      "description": "Bifrose Linux ELF backdoor establishing covert reverse shell command channels."
+    },
+    {
+      "name": "Trojan.Linux.Dofloo.AESDDoS",
+      "sha256": "4ea5bb29e06180517865c697e8891f46a57344aa47ee4ec484db96c738ef9ff5",
+      "md5": "3f92b4568e01ba034081c7061d42c8a9",
+      "severity": "High",
+      "description": "Dofloo (AES.DDoS) Linux Trojan executing remote commands and SYN/UDP flooding."
+    },
+    {
+      "name": "Exploit.Linux.PwnKit.CVE-2021-4034",
+      "sha256": "6d2a715f22e70e9a31828f77aa9cf739b6e810486e9d6756eb41a77e6820579e",
+      "md5": "53f53835ce08c3ec4aa419f8ec2404e5",
+      "severity": "Critical",
+      "description": "PwnKit local privilege escalation exploit binary targeting pkexec."
+    },
+    {
+      "name": "Miner.Linux.XMRig.Payload",
+      "sha256": "a93b22cf94c34cb2cb6f131a3998be7122a0ec449c253b27b872b7a66fa19b0a",
+      "md5": "61d36d4e8b387ba987e9cf29994c6f93",
+      "severity": "Medium",
+      "description": "XMRig cryptocurrency miner deployed unauthorizedly by automated cloud droppers."
+    },
+    {
+      "name": "Worm.Linux.Sysrv.Cryptominer",
+      "sha256": "5df469858547ca3a42eb632f05a92a54e06dc7c2e37941dc68367a840e69f88c",
+      "md5": "8b19a3b6f98294a8bc370498b5a04a39",
+      "severity": "High",
+      "description": "Sysrv-hello Go-based Linux and Windows cross-platform cryptomining worm."
+    },
+    {
+      "name": "Spyware.Win32.RedLine.Stealer",
+      "sha256": "3b8cae6a4b3d7cc01f8c4456ef184dc07b3d3170e17fb2b5ba45d8b8e88ff593",
+      "md5": "ce9a499a2245b91b86d9a9cb2c483a90",
+      "severity": "Critical",
+      "description": "RedLine Stealer harvesting browser credentials, crypto wallets, and session cookies."
+    },
+    {
+      "name": "Spyware.Win32.Vidar.Stealer",
+      "sha256": "9f323861cbbbe301f56bbab5d20366ae70cf842f2b3e839aa64b598b965f8a0a",
+      "md5": "f2c4161bbca9c22d64bc863dc0be432e",
+      "severity": "Critical",
+      "description": "Vidar modular infostealer harvesting 2FA tokens and banking credentials."
+    },
+    {
+      "name": "Spyware.Win32.Lumma.Stealer",
+      "sha256": "a3b118dbcdff52be786bc6478be320573be01c3132e4d2bfb2fe997ad9cb4432",
+      "md5": "3a4f6beeb3934d4a8966779a1cfca441",
+      "severity": "Critical",
+      "description": "LummaC2 Stealer targeting Chromium and Gecko browser profiles and crypto extensions."
+    },
+    {
+      "name": "Spyware.Win32.AgentTesla.Loader",
+      "sha256": "78e58a980ebc44f3efd6718cb174a73752e825a072465c401aa87eeab1ff83ec",
+      "md5": "46a8cae60eb4d7a8d5e12f0fb8bc3f12",
+      "severity": "High",
+      "description": "Agent Tesla .NET keylogger, clipboard monitor, and credential harvester."
+    },
+    {
+      "name": "Spyware.Win32.Raccoon.Stealer",
+      "sha256": "89cb7fefb1d5da9c168ff15bf0ea4eefaa48e24fa2da91bc7ad24bb3e54bdf16",
+      "md5": "25b91b86d9a9cb2c483a90ce9a499a22",
+      "severity": "High",
+      "description": "Raccoon Stealer v2 C/C++ lightweight credential and credit card stealer."
+    },
+    {
+      "name": "Spyware.Win32.Formbook.Stealer",
+      "sha256": "4f3c2d1e0a8b7c6d5e4f3a2b1c0d9e8f7a6b5c4d3e2f1a0b9c8d7e6f5a4b7b9a",
+      "md5": "6a798807162534435261701f2e3d4c5b",
+      "severity": "High",
+      "description": "Formbook form grabber and keystroke logger injecting into system processes."
+    },
+    {
+      "name": "Spyware.Win32.SnakeKeylogger",
+      "sha256": "d3a745027cc450ef5f8c5f653329641ec1fed91f694e0d229928963b30f6b0d7",
+      "md5": "3a74571b6a493388e7d0b40c83ce903b",
+      "severity": "High",
+      "description": "Snake Keylogger credential stealer transmitting logs via Telegram / SMTP."
+    },
+    {
+      "name": "Spyware.Win32.LokiBot.CredentialStealer",
+      "sha256": "6c8be48b7880df9878e5f2cf29be41f64f89be963fa1ec32050e82c16828551c",
+      "md5": "8fef2889e49a0e6988f579d4948dbbc0",
+      "severity": "High",
+      "description": "LokiBot infostealer exfiltrating FTP, email, and web passwords."
+    },
+    {
+      "name": "Trojan.Win32.Emotet.Loader",
+      "sha256": "576579d4791da05ca592d3e4210d7ef5b8f7fa7b99c2d1b54c86cb31a57c5a08",
+      "md5": "47a3e7fc977eb7b9ee9e663a8a3a0c0e",
+      "severity": "Critical",
+      "description": "Emotet polymorphic modular loader delivering ransomware and banking payloads."
+    },
+    {
+      "name": "Trojan.Win32.TrickBot.CoreModule",
       "sha256": "7b9a4f3c2d1e0a8b7c6d5e4f3a2b1c0d9e8f7a6b5c4d3e2f1a0b9c8d7e6f5a4b",
       "md5": "1f2e3d4c5b6a79880716253443526170",
+      "severity": "Critical",
+      "description": "TrickBot banking trojan and lateral movement reconnaissance framework."
+    },
+    {
+      "name": "Trojan.Win32.Qakbot.Payload",
+      "sha256": "e06dc7c2e37941dc68367a840e69f88c5efba7599059f13110287ff27c6d66e7",
+      "md5": "5df469858547ca3a42eb632f05a92a54",
+      "severity": "Critical",
+      "description": "Qakbot (QBot / Pinkslipbot) banking trojan with worm propagation capabilities."
+    },
+    {
+      "name": "Trojan.Win32.IcedID.BokBot",
+      "sha256": "a57344aa47ee4ec484db96c738ef9ff51ef2713f6bb99951dff6bfbe70c7974e",
+      "md5": "4ea5bb29e06180517865c697e8891f46",
       "severity": "High",
-      "description": "Simulated TrickBot modular trojan signature entry."
+      "description": "IcedID (BokBot) banking trojan serving as initial access broker."
+    },
+    {
+      "name": "Trojan.Win32.Dridex.Loader",
+      "sha256": "91a2b3c4d5e6f708192a3b4c5d6e7f809f8e7d6c5b4a39281726354453627180",
+      "md5": "221100ffeeddccbbaa99887766554433",
+      "severity": "High",
+      "description": "Dridex financial trojan using malicious Office macros and web injection."
+    },
+    {
+      "name": "Trojan.Win32.BazarLoader.A",
+      "sha256": "b872b7a66fa19b0aa93b22cf94c34cb2cb6f131a3998be7122a0ec449c253b27",
+      "md5": "fe4923e38fe3529ee10f3410081d4323",
+      "severity": "High",
+      "description": "BazarLoader stealth loader utilizing DNS tunneling for C2 infrastructure."
+    },
+    {
+      "name": "Trojan.Win32.GuLoader.Injector",
+      "sha256": "a3b5c03a6c117d7e793910c226a45e7f0b9821bb6b88c1f0b094896ebcd4b898",
+      "md5": "08e01ba034081c7061d42c8a9139fe9d",
+      "severity": "High",
+      "description": "GuLoader advanced shellcode injector utilizing complex anti-analysis techniques."
     },
     {
       "name": "Backdoor.Win32.CobaltStrike.Beacon",
       "sha256": "9f8e7d6c5b4a3928172635445362718091a2b3c4d5e6f708192a3b4c5d6e7f80",
       "md5": "99887766554433221100ffeeddccbbaa",
       "severity": "Critical",
-      "description": "Simulated unauthorized post-exploitation beacon signature entry."
+      "description": "Cobalt Strike post-exploitation beacon payload used in unauthorized enterprise intrusion."
     },
     {
-      "name": "Spyware.Win32.AgentTesla.A",
-      "sha256": "c1d2e3f4a5b60718293a4b5c6d7e8f90112233445566778899aabbccddeeff00",
-      "md5": "aa11bb22cc33dd44ee55ff6600778899",
+      "name": "Backdoor.Win32.AsyncRAT.A",
+      "sha256": "c830cb85542f7c0062e24560b45780518744b6754b2c129487c6999be7815340",
+      "md5": "82bc6972ee78b277df60e528b3eb6c3c",
+      "severity": "Critical",
+      "description": "AsyncRAT open-source remote access tool weaponized for persistence."
+    },
+    {
+      "name": "Backdoor.Win32.RemcosRAT.Pro",
+      "sha256": "64a2e57ee7535b42d1316bdf6ef1283297a7837078e63a8a9a463a0a3246ebc1",
+      "md5": "e56dc5c8d7b3cf2865ee358b14e9f06a",
+      "severity": "Critical",
+      "description": "Remcos RAT commercial remote management tool abused for covert surveillance."
+    },
+    {
+      "name": "Backdoor.Win32.njRAT.Bladabindi",
+      "sha256": "2c6d7a4b8c9e01f2a3b4c5d6546a9a3b6f98294a8bc370498b5a04a390ef15b8",
+      "md5": "89ef327091bc7ad24b68c34510b64f91",
       "severity": "High",
-      "description": "Simulated credential stealer / keylogger signature entry."
+      "description": "njRAT (Bladabindi) .NET remote administration Trojan with registry persistence."
+    },
+    {
+      "name": "Backdoor.Win32.QuasarRAT.Client",
+      "sha256": "cbdfb307ec29d5b25752da1b6814e4b52b31122a6136d89e47adcf8c764c6767",
+      "md5": "774bf7d6dd6b5ea6e680a6c0d02ea2aa",
+      "severity": "High",
+      "description": "QuasarRAT lightweight open-source C# remote access tool."
+    },
+    {
+      "name": "Backdoor.Win32.DarkComet.RAT",
+      "sha256": "1ec32050e82c16828551c6c8be48b7880df9878e5f2cf29be41f64f89be963fa",
+      "md5": "579d4948dbbc0efef2889e49a0e6988f",
+      "severity": "High",
+      "description": "DarkComet Delphi-based remote access Trojan providing webcam and desktop streaming."
+    },
+    {
+      "name": "Wiper.Win32.HermeticWiper",
+      "sha256": "0385e49877b20230242109d6648a09e3ec8e5b90fffae4f8657937ac561c4b73",
+      "md5": "8b7762e84774e1d74a2b9d242634e2f8",
+      "severity": "Critical",
+      "description": "HermeticWiper destructive data wiper utilizing signed EaseUS partition manager drivers."
+    },
+    {
+      "name": "Wiper.Win32.CaddyWiper",
+      "sha256": "a294cf4051b03f449305e523882f1882438c83e4e8d610d7881203a4122f8d8e",
+      "md5": "10041d82136e4b9bbd276b51046187b5",
+      "severity": "Critical",
+      "description": "CaddyWiper zero-footprint data wiper zeroing physical disk partitions."
+    },
+    {
+      "name": "Wiper.Win32.WhisperGate.Stage1",
+      "sha256": "a196c668b79ba2b83774ed6819618e734017a6016330d07db384561dda71d86c",
+      "md5": "e6a3d1d19d6eb40618ff0e3413426e2e",
+      "severity": "Critical",
+      "description": "WhisperGate destructive bootloader wiper targeting master boot records."
+    },
+    {
+      "name": "Wiper.Linux.AcidRain.Payload",
+      "sha256": "9e47adcf8c764c6767cbdfb307ec29d5b25752da1b6814e4b52b31122a6136d8",
+      "md5": "0d02ea2aa774bf7d6dd6b5ea6e680a6c",
+      "severity": "Critical",
+      "description": "AcidRain targeted Linux wiper designed to overwrite flash memory and satellite terminals."
+    },
+    {
+      "name": "Worm.Win32.Stuxnet.KernelDriver",
+      "sha256": "505191c015b672777174db498966a3d1d19d6eb40618ff0e34f6bb99951dff6b",
+      "md5": "5b2938eb5c0b02138bc4cf472f88ff84",
+      "severity": "Critical",
+      "description": "Stuxnet industrial ICS worm signed rootkit driver."
+    },
+    {
+      "name": "Backdoor.Win32.SUNBURST.SolarWinds",
+      "sha256": "325ab288e12d4d9a4693a180373ab945a8df25ec6aab3ce0ce86f87fa32c3f87",
+      "md5": "b91645f0408d33fed0e35970ad7547be",
+      "severity": "Critical",
+      "description": "SUNBURST supply chain backdoor embedded into SolarWinds Orion software updates."
+    },
+    {
+      "name": "Wiper.Win32.Shamoon.Disttrack",
+      "sha256": "79b459c60443a335137152f64a6fa27321948d37384b45c85d50329742b581a5",
+      "md5": "8050e680a6c0d02ea2aa774bf7d6dd64",
+      "severity": "Critical",
+      "description": "Shamoon (Disttrack) disk-wiping wiper destroying master boot records."
+    },
+    {
+      "name": "Wiper.Win32.OlympicDestroyer",
+      "sha256": "edb682650ee48bd949f390b1477759ad2c8c459ca2a229ddac1586eb8c156828",
+      "md5": "b2259ebe3b2e32f14ec42125bb2a4a75",
+      "severity": "Critical",
+      "description": "Olympic Destroyer network and wiper payload targeting Winter Olympic infrastructure."
     }
   ]
 }

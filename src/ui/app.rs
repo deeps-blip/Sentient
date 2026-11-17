@@ -1,15 +1,22 @@
+use crate::heuristics::{inspect_file_heuristics, HeuristicReport};
 use crate::models::{
     format_bytes, now_timestamp, sentient_data_dir, ActivityLogEntry, LogLevel, MrtReport,
     PersistedAppState, ProtectionStatus, ScanEvent, ScanMode, ScanResult, Threat, ThreatSignature,
 };
+use crate::network::{scan_active_network_sockets, NetworkSocketEntry, SocketProtocol};
 use crate::platform;
+use crate::process::{audit_running_processes, kill_process, ProcessAuditItem, ProcessRisk};
 use crate::quarantine::manager::QuarantineManager;
+use crate::reports::{generate_html_report, generate_stix21_bundle};
 use crate::scanner::hash_engine::{
     quick_scan_roots, run_hash_scan, run_in_memory_eicar_self_test, SignatureIndex, SignatureStore,
 };
 use crate::scanner::scanner::{
     mrt_executable_path, mrt_log_path, read_latest_mrt_report, run_mrt_scan,
 };
+use crate::sentinel::{SentinelAlert, SentinelManager};
+use crate::usb::{detect_removable_drives, immunize_drive, UsbDriveInfo};
+use crate::yara::{parse_yara_source, YaraEngine, YaraMatch};
 use crossbeam_channel::{unbounded, Receiver};
 use eframe::egui::{
     self, Align, Color32, CornerRadius, Frame, Layout, Margin, Pos2, Rect, RichText, ScrollArea,
@@ -65,6 +72,10 @@ const TEXT_MUTED: Color32 = Color32::from_rgb(148, 163, 184);
 enum NavTab {
     Dashboard,
     ScanCenter,
+    LiveSentinel,
+    ProcessAudit,
+    NetworkSockets,
+    YaraHeuristics,
     Quarantine,
     ActivityLogs,
     Preferences,
@@ -141,6 +152,27 @@ pub struct SentientApp {
     new_sig_md5: String,
     new_sig_severity: String,
     banner_feedback: Option<(String, bool)>,
+
+    // Active Defense & YARA
+    yara_engine: Arc<YaraEngine>,
+    sentinel_manager: Option<SentinelManager>,
+    sentinel_rx: Option<Receiver<SentinelAlert>>,
+    sentinel_alerts: Vec<SentinelAlert>,
+    sentinel_enabled: bool,
+
+    // Process & Network
+    process_items: Vec<ProcessAuditItem>,
+    process_search: String,
+    socket_items: Vec<NetworkSocketEntry>,
+    socket_search: String,
+    usb_drives: Vec<UsbDriveInfo>,
+
+    // Static Heuristics & Custom YARA
+    heuristic_target: String,
+    heuristic_report: Option<HeuristicReport>,
+    yara_rule_input: String,
+    yara_target_file: String,
+    yara_match_results: Vec<YaraMatch>,
 }
 
 impl SentientApp {
@@ -190,6 +222,16 @@ impl SentientApp {
                 }
             });
 
+        let yara_engine = Arc::new(YaraEngine::new());
+        let (sentinel_tx, sentinel_rx) = unbounded();
+        let sentinel_manager = Some(SentinelManager::start(
+            Arc::clone(&signatures),
+            Arc::clone(&yara_engine),
+            persisted.settings.auto_quarantine,
+            sentinel_tx,
+        ));
+        let usb_drives = detect_removable_drives();
+
         let mut app = Self {
             active_tab: NavTab::Dashboard,
             is_elevated,
@@ -215,6 +257,21 @@ impl SentientApp {
             new_sig_md5: String::new(),
             new_sig_severity: "High".to_string(),
             banner_feedback: None,
+            yara_engine,
+            sentinel_manager,
+            sentinel_rx: Some(sentinel_rx),
+            sentinel_alerts: Vec::new(),
+            sentinel_enabled: true,
+            process_items: Vec::new(),
+            process_search: String::new(),
+            socket_items: Vec::new(),
+            socket_search: String::new(),
+            usb_drives,
+            heuristic_target: String::new(),
+            heuristic_report: None,
+            yara_rule_input: String::new(),
+            yara_target_file: String::new(),
+            yara_match_results: Vec::new(),
         };
 
         if app.logs.is_empty() {
@@ -590,6 +647,39 @@ impl SentientApp {
                 errors: scan_errors,
             });
         }
+
+        let mut drained_sentinel_alerts = Vec::new();
+        if let Some(ref rx) = self.sentinel_rx {
+            while let Ok(alert) = rx.try_recv() {
+                drained_sentinel_alerts.push(alert);
+            }
+        }
+
+        for alert in drained_sentinel_alerts {
+            self.push_log(
+                LogLevel::Threat,
+                "Live Sentinel",
+                format!(
+                    "Intercepted {} at '{}' ({})",
+                    alert.threat_name,
+                    alert.path.display(),
+                    alert.detection_method
+                ),
+                Some(format!("SHA256: {}", alert.sha256)),
+            );
+            if alert.quarantined {
+                self.push_log(
+                    LogLevel::Success,
+                    "Sentinel Quarantine",
+                    format!("Quarantined dropped file '{}'", alert.path.display()),
+                    None,
+                );
+            }
+            self.sentinel_alerts.insert(0, alert);
+            if self.sentinel_alerts.len() > 100 {
+                self.sentinel_alerts.truncate(100);
+            }
+        }
     }
 
     fn quarantine_active_threat(&mut self, idx: usize) {
@@ -699,6 +789,10 @@ impl eframe::App for SentientApp {
                             |ui| match self.active_tab {
                                 NavTab::Dashboard => self.render_dashboard(ui),
                                 NavTab::ScanCenter => self.render_scan_center(ui),
+                                NavTab::LiveSentinel => self.render_live_sentinel(ui),
+                                NavTab::ProcessAudit => self.render_process_audit(ui),
+                                NavTab::NetworkSockets => self.render_network_sockets(ui),
+                                NavTab::YaraHeuristics => self.render_yara_heuristics(ui),
                                 NavTab::Quarantine => self.render_quarantine_manager(ui),
                                 NavTab::ActivityLogs => self.render_activity_logs(ui),
                                 NavTab::Preferences => self.render_preferences(ui),
@@ -719,6 +813,22 @@ impl SentientApp {
             NavTab::ScanCenter => (
                 "Scan Center",
                 "Multithreaded SHA-256 inspection & deep local system verification",
+            ),
+            NavTab::LiveSentinel => (
+                "Live Sentinel & USB Guard",
+                "Real-time drop interception, removable drive immunization, and air-gap defense",
+            ),
+            NavTab::ProcessAudit => (
+                "Live Process & Memory Audit",
+                "Active PID threat evaluation, masquerade detection, and instant termination",
+            ),
+            NavTab::NetworkSockets => (
+                "Network Socket & C2 Auditor",
+                "Listening endpoints, covert port heuristics, and reverse shell detection",
+            ),
+            NavTab::YaraHeuristics => (
+                "YARA & Heuristics Engine",
+                "Pure-Rust pattern matching, Shannon entropy calculation, and PE/ELF inspection",
             ),
             NavTab::Quarantine => (
                 "Quarantine Vault",
@@ -794,23 +904,6 @@ impl SentientApp {
                                     );
                                 });
                             });
-
-                        ui.add_space(8.0);
-
-                        // Offline privacy badge pill
-                        Frame::new()
-                            .fill(BG_CARD)
-                            .stroke(Stroke::new(1.0, BORDER_SUBTLE))
-                            .corner_radius(CornerRadius::same(16))
-                            .inner_margin(Margin::symmetric(12, 7))
-                            .show(ui, |ui| {
-                                ui.label(
-                                    RichText::new("OFFLINE • ZERO TELEMETRY")
-                                        .strong()
-                                        .size(11.0)
-                                        .color(ACCENT_CYAN),
-                                );
-                            });
                     });
                 });
             });
@@ -870,7 +963,8 @@ impl SentientApp {
             .filter(|t| !t.quarantined)
             .count();
 
-        let nav_items: [(NavTab, &str, &str, Option<(usize, Color32)>); 4] = [
+        let sentinel_count = self.sentinel_alerts.len();
+        let nav_items: [(NavTab, &str, &str, Option<(usize, Color32)>); 8] = [
             (NavTab::Dashboard, "Dashboard", "HOME", None),
             (
                 NavTab::ScanCenter,
@@ -878,6 +972,15 @@ impl SentientApp {
                 "SCAN",
                 (threat_count > 0).then_some((threat_count, ACCENT_RED)),
             ),
+            (
+                NavTab::LiveSentinel,
+                "Live Sentinel",
+                "GUARD",
+                (sentinel_count > 0).then_some((sentinel_count, ACCENT_CYAN)),
+            ),
+            (NavTab::ProcessAudit, "Process Audit", "TASKS", None),
+            (NavTab::NetworkSockets, "Network Sockets", "PORTS", None),
+            (NavTab::YaraHeuristics, "YARA & Entropy", "YARA", None),
             (
                 NavTab::Quarantine,
                 "Quarantine Vault",
@@ -1651,6 +1754,9 @@ impl SentientApp {
             } else {
                 ACCENT_GREEN
             };
+            let mut export_feedback: Option<(String, bool)> = None;
+            let mut export_log: Option<(LogLevel, String, String)> = None;
+
             card_frame_with_stroke(BG_CARD, border).show(ui, |ui| {
                 ui.set_min_width(ui.available_width());
                 ui.label(
@@ -1691,6 +1797,52 @@ impl SentientApp {
                     ui.add_space(10.0);
                     render_system_report_details(ui, report);
                 }
+                ui.add_space(10.0);
+                ui.horizontal(|ui| {
+                    if secondary_button(ui, "Export Forensic HTML", 160.0, 30.0).clicked() {
+                        let html = generate_html_report(summary);
+                        let default_name = format!(
+                            "sentient-forensic-report-{}.html",
+                            now_timestamp().replace([':', ' ', '-'], "_")
+                        );
+                        if let Some(dest) = rfd::FileDialog::new()
+                            .set_file_name(&default_name)
+                            .add_filter("HTML Report", &["html"])
+                            .save_file()
+                        {
+                            if let Err(e) = fs::write(&dest, html) {
+                                export_feedback =
+                                    Some((format!("Failed to write HTML report: {e}"), true));
+                            } else {
+                                let msg = format!("Forensic HTML report saved to '{}'", dest.display());
+                                export_feedback = Some((msg.clone(), false));
+                                export_log = Some((LogLevel::Success, "ForensicReport".to_string(), msg));
+                            }
+                        }
+                    }
+
+                    if secondary_button(ui, "Export STIX 2.1 (JSON)", 160.0, 30.0).clicked() {
+                        let stix = generate_stix21_bundle(summary);
+                        let default_name = format!(
+                            "sentient-stix21-{}.json",
+                            now_timestamp().replace([':', ' ', '-'], "_")
+                        );
+                        if let Some(dest) = rfd::FileDialog::new()
+                            .set_file_name(&default_name)
+                            .add_filter("STIX JSON", &["json"])
+                            .save_file()
+                        {
+                            if let Err(e) = fs::write(&dest, stix) {
+                                export_feedback =
+                                    Some((format!("Failed to write STIX bundle: {e}"), true));
+                            } else {
+                                let msg = format!("STIX 2.1 bundle saved to '{}'", dest.display());
+                                export_feedback = Some((msg.clone(), false));
+                                export_log = Some((LogLevel::Success, "ForensicReport".to_string(), msg));
+                            }
+                        }
+                    }
+                });
                 if !result.errors.is_empty() {
                     ui.add_space(8.0);
                     for err in result.errors.iter().take(3) {
@@ -1702,6 +1854,14 @@ impl SentientApp {
                     }
                 }
             });
+
+            if let Some((msg, is_err)) = export_feedback {
+                self.banner_feedback = Some((msg, is_err));
+            }
+            if let Some((lvl, cat, msg)) = export_log {
+                self.push_log(lvl, cat, msg, None);
+            }
+
             ui.add_space(16.0);
         }
 
@@ -2147,7 +2307,7 @@ impl SentientApp {
                     );
                     ui.label(
                         RichText::new(format!(
-                            "Location: {}  •  Version: {}  •  Entries: {}",
+                            "Location: {}  •  Version: {}  •  Indexed Threat Signatures: {}",
                             self.sig_store.path().display(),
                             self.signatures.version,
                             self.signatures.len()
@@ -2157,7 +2317,7 @@ impl SentientApp {
                     );
                 });
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    if secondary_button(ui, "Reload DB", 100.0, 30.0).clicked() {
+                    if secondary_button(ui, "Reload DB", 90.0, 30.0).clicked() {
                         match self.sig_store.load_or_seed() {
                             Ok(idx) => {
                                 self.signatures = Arc::new(idx);
@@ -2171,7 +2331,66 @@ impl SentientApp {
                             }
                         }
                     }
+
+                    if secondary_button(ui, "Import Feed (JSON)", 140.0, 30.0).clicked() {
+                        let dialog = rfd::FileDialog::new()
+                            .set_title("Import Offline Threat Intelligence (JSON)")
+                            .add_filter("Threat Intelligence JSON", &["json"]);
+                        if let Some(file_path) = dialog.pick_file() {
+                            match self.sig_store.import_threat_intel_file(&file_path) {
+                                Ok((idx, added)) => {
+                                    self.signatures = Arc::new(idx);
+                                    let file_name = file_path
+                                        .file_name()
+                                        .and_then(|n| n.to_str())
+                                        .unwrap_or("feed");
+                                    let msg = format!(
+                                        "Imported {added} new threats from '{file_name}'. Total indexed: {}.",
+                                        self.signatures.len()
+                                    );
+                                    self.banner_feedback = Some((msg.clone(), false));
+                                    self.push_log(LogLevel::Info, "ThreatIntel", msg, None);
+                                }
+                                Err(e) => {
+                                    self.banner_feedback = Some((e, true));
+                                }
+                            }
+                        }
+                    }
+
+                    if primary_button(ui, "Update Threat Intel", 150.0, 30.0, ACCENT_CYAN).clicked() {
+                        match self.sig_store.sync_with_embedded_or_workspace_intel() {
+                            Ok((idx, added)) => {
+                                self.signatures = Arc::new(idx);
+                                let msg = if added > 0 {
+                                    format!(
+                                        "Threat intelligence updated! Merged {added} new threat hashes. Total indexed: {}.",
+                                        self.signatures.len()
+                                    )
+                                } else {
+                                    format!(
+                                        "Threat intelligence database is already up to date. Total indexed: {}.",
+                                        self.signatures.len()
+                                    )
+                                };
+                                self.banner_feedback = Some((msg.clone(), false));
+                                self.push_log(LogLevel::Info, "ThreatIntel", msg, None);
+                            }
+                            Err(e) => {
+                                self.banner_feedback = Some((e, true));
+                            }
+                        }
+                    }
                 });
+            });
+
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                ui.label(
+                    RichText::new("🛡️ Offline Security Guarantee: Updates run ONLY to update the hash database and threat intelligence. Core binaries, executables, and scanning engines remain 100% offline with zero cloud telemetry.")
+                        .size(11.5)
+                        .color(ACCENT_CYAN),
+                );
             });
 
             ui.add_space(12.0);
@@ -2363,6 +2582,917 @@ impl SentientApp {
                     }
                 }
             });
+        });
+    }
+
+    // -------------------------------------------------------------
+    // Tab: Live Sentinel & USB Removable Media Auto-Defender
+    // -------------------------------------------------------------
+    fn render_live_sentinel(&mut self, ui: &mut egui::Ui) {
+        let stats = self.sentinel_manager.as_ref().map(|s| s.stats()).unwrap_or_default();
+        let is_running = self.sentinel_manager.as_ref().map(|s| s.is_active()).unwrap_or(false);
+
+        // Card 1: Sentinel Status & Control
+        card_frame(BG_CARD).show(ui, |ui| {
+            ui.set_min_width(ui.available_width());
+            ui.horizontal(|ui| {
+                paint_badge_icon(ui, FeatureIcon::DeepShield, if is_running { ACCENT_GREEN } else { ACCENT_AMBER });
+                ui.add_space(10.0);
+                ui.vertical(|ui| {
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            RichText::new("Real-Time Sentinel Engine")
+                                .strong()
+                                .size(17.0)
+                                .color(TEXT_PRIMARY),
+                        );
+                        ui.add_space(6.0);
+                        if is_running {
+                            tag_pill(ui, "ACTIVE GUARD", ACCENT_GREEN);
+                        } else {
+                            tag_pill(ui, "PAUSED", ACCENT_AMBER);
+                        }
+                    });
+                    ui.add_space(2.0);
+                    ui.label(
+                        RichText::new("Continuous background filesystem watcher with on-drop triple inspection (Hash + YARA + Shannon Entropy Crypter detection).")
+                            .size(12.0)
+                            .color(TEXT_MUTED),
+                    );
+                });
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    if is_running {
+                        if danger_button(ui, "Pause Sentinel", 130.0, 32.0).clicked() {
+                            if let Some(ref mut mgr) = self.sentinel_manager {
+                                mgr.stop();
+                            }
+                            self.sentinel_enabled = false;
+                            self.push_log(LogLevel::Warning, "Sentinel", "Real-time background watcher paused by user.", None);
+                        }
+                    } else {
+                        if primary_button(ui, "Resume Sentinel", 140.0, 32.0, ACCENT_GREEN).clicked() {
+                            let (sentinel_tx, sentinel_rx) = unbounded();
+                            self.sentinel_manager = Some(SentinelManager::start(
+                                Arc::clone(&self.signatures),
+                                Arc::clone(&self.yara_engine),
+                                self.persisted.settings.auto_quarantine,
+                                sentinel_tx,
+                            ));
+                            self.sentinel_rx = Some(sentinel_rx);
+                            self.sentinel_enabled = true;
+                            self.push_log(LogLevel::Success, "Sentinel", "Real-time background watcher resumed.", None);
+                        }
+                    }
+                });
+            });
+
+            ui.add_space(12.0);
+            ui.columns(3, |cols| {
+                render_kpi_card(
+                    &mut cols[0],
+                    "INSPECTED DROPS",
+                    &stats.files_inspected.to_string(),
+                    "Background analyzed",
+                    ACCENT_CYAN,
+                );
+                render_kpi_card(
+                    &mut cols[1],
+                    "THREATS INTERCEPTED",
+                    &stats.threats_intercepted.to_string(),
+                    "Zero-day & known drops",
+                    if stats.threats_intercepted > 0 { ACCENT_RED } else { ACCENT_GREEN },
+                );
+                render_kpi_card(
+                    &mut cols[2],
+                    "WATCHED ROOTS",
+                    &stats.watched_paths.len().to_string(),
+                    "User drop directories",
+                    ACCENT_INDIGO,
+                );
+            });
+        });
+
+        ui.add_space(14.0);
+
+        // Card 2: Removable Media & USB Auto-Defender
+        card_frame(BG_CARD).show(ui, |ui| {
+            ui.set_min_width(ui.available_width());
+            ui.horizontal(|ui| {
+                ui.label(
+                    RichText::new("Removable Media & Air-Gap USB Defender")
+                        .strong()
+                        .size(16.0)
+                        .color(TEXT_PRIMARY),
+                );
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    if secondary_button(ui, "Rescan USB Drives", 150.0, 30.0).clicked() {
+                        self.usb_drives = detect_removable_drives();
+                        let count = self.usb_drives.len();
+                        self.push_log(LogLevel::Info, "USBGuard", format!("Detected {count} removable storage devices."), None);
+                    }
+                });
+            });
+            ui.add_space(8.0);
+            ui.label(
+                RichText::new("Detects USB flash drives and external media. Immunizes drives by neutralizing autorun worms and blocking .inf-based execution traps.")
+                    .size(12.0)
+                    .color(TEXT_MUTED),
+            );
+            ui.add_space(10.0);
+
+            if self.usb_drives.is_empty() {
+                Frame::new()
+                    .fill(BG_ELEVATED)
+                    .corner_radius(CornerRadius::same(8))
+                    .inner_margin(Margin::same(12))
+                    .show(ui, |ui| {
+                        ui.label(RichText::new("No removable USB drives currently inserted.").size(12.5).color(TEXT_MUTED));
+                    });
+            } else {
+                let mut immunize_target: Option<PathBuf> = None;
+                for drive in &self.usb_drives {
+                    let is_immunized = drive.path.join("autorun.inf").is_dir();
+                    Frame::new()
+                        .fill(BG_ELEVATED)
+                        .stroke(Stroke::new(1.0, BORDER_SUBTLE))
+                        .corner_radius(CornerRadius::same(8))
+                        .inner_margin(Margin::same(12))
+                        .show(ui, |ui| {
+                            ui.horizontal(|ui| {
+                                ui.vertical(|ui| {
+                                    ui.horizontal(|ui| {
+                                        ui.label(
+                                            RichText::new(format!("Drive: {}", drive.path.display()))
+                                                .strong()
+                                                .size(14.0)
+                                                .color(TEXT_PRIMARY),
+                                        );
+                                        ui.add_space(6.0);
+                                        if is_immunized {
+                                            tag_pill(ui, "IMMUNIZED", ACCENT_GREEN);
+                                        } else {
+                                            tag_pill(ui, "UNPROTECTED", ACCENT_AMBER);
+                                        }
+                                        if drive.has_autorun && !is_immunized {
+                                            ui.add_space(4.0);
+                                            tag_pill(ui, "AUTORUN DETECTED", ACCENT_RED);
+                                        }
+                                    });
+                                    ui.add_space(2.0);
+                                    ui.label(
+                                        RichText::new(format!(
+                                            "Label: {} • Removable: {} • Suspicious files: {}",
+                                            drive.label,
+                                            drive.is_removable,
+                                            drive.suspicious_files.len()
+                                        ))
+                                        .size(11.5)
+                                        .color(TEXT_MUTED),
+                                    );
+                                });
+
+                                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                    if !is_immunized {
+                                        if primary_button(ui, "Immunize Drive", 130.0, 30.0, ACCENT_CYAN).clicked() {
+                                            immunize_target = Some(drive.path.clone());
+                                        }
+                                    } else {
+                                        ui.label(RichText::new("Vaccinated against worms").size(11.5).color(ACCENT_GREEN));
+                                    }
+                                });
+                            });
+                        });
+                    ui.add_space(6.0);
+                }
+
+                if let Some(target) = immunize_target {
+                    match immunize_drive(&target) {
+                        Ok(()) => {
+                            let msg = format!("Drive '{}' successfully immunized against autorun worm vectors.", target.display());
+                            self.banner_feedback = Some((msg.clone(), false));
+                            self.push_log(LogLevel::Success, "USBGuard", msg, None);
+                            self.usb_drives = detect_removable_drives();
+                        }
+                        Err(e) => {
+                            self.banner_feedback = Some((format!("Immunization failed: {e}"), true));
+                        }
+                    }
+                }
+            }
+        });
+
+        ui.add_space(14.0);
+
+        // Card 3: Intercepted Dropped Files Ledger
+        card_frame(BG_CARD).show(ui, |ui| {
+            ui.set_min_width(ui.available_width());
+            ui.horizontal(|ui| {
+                ui.label(
+                    RichText::new(format!("Real-Time Drop Interceptions ({})", self.sentinel_alerts.len()))
+                        .strong()
+                        .size(16.0)
+                        .color(if self.sentinel_alerts.is_empty() { TEXT_PRIMARY } else { ACCENT_RED_SOFT }),
+                );
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    if !self.sentinel_alerts.is_empty() && secondary_button(ui, "Clear Interceptions", 140.0, 28.0).clicked() {
+                        self.sentinel_alerts.clear();
+                    }
+                });
+            });
+            ui.add_space(10.0);
+
+            if self.sentinel_alerts.is_empty() {
+                Frame::new()
+                    .fill(BG_ELEVATED)
+                    .corner_radius(CornerRadius::same(8))
+                    .inner_margin(Margin::same(12))
+                    .show(ui, |ui| {
+                        ui.label(
+                            RichText::new("No suspicious file drops intercepted yet. Watched user folders are healthy.")
+                                .size(12.5)
+                                .color(TEXT_MUTED),
+                        );
+                    });
+            } else {
+                for alert in &self.sentinel_alerts {
+                    Frame::new()
+                        .fill(BG_HERO_THREAT)
+                        .stroke(Stroke::new(1.0, ACCENT_RED))
+                        .corner_radius(CornerRadius::same(8))
+                        .inner_margin(Margin::same(12))
+                        .show(ui, |ui| {
+                            ui.horizontal(|ui| {
+                                ui.vertical(|ui| {
+                                    ui.horizontal(|ui| {
+                                        ui.label(
+                                            RichText::new(&alert.threat_name)
+                                                .strong()
+                                                .size(14.0)
+                                                .color(ACCENT_RED_SOFT),
+                                        );
+                                        ui.add_space(6.0);
+                                        tag_pill(ui, &alert.detection_method, ACCENT_AMBER);
+                                        if alert.quarantined {
+                                            ui.add_space(4.0);
+                                            tag_pill(ui, "AUTO-QUARANTINED", ACCENT_GREEN);
+                                        }
+                                    });
+                                    ui.add_space(3.0);
+                                    ui.label(
+                                        RichText::new(format!("Location: {}", alert.path.display()))
+                                            .size(12.0)
+                                            .color(TEXT_PRIMARY),
+                                    );
+                                    ui.label(
+                                        RichText::new(format!("SHA-256: {} • Intercepted: {}", alert.sha256, alert.detected_at))
+                                            .monospace()
+                                            .size(10.5)
+                                            .color(TEXT_MUTED),
+                                    );
+                                });
+                            });
+                        });
+                    ui.add_space(6.0);
+                }
+            }
+        });
+    }
+
+    // -------------------------------------------------------------
+    // Tab: Live Process & Memory Threat Audit
+    // -------------------------------------------------------------
+    fn render_process_audit(&mut self, ui: &mut egui::Ui) {
+        card_frame(BG_CARD).show(ui, |ui| {
+            ui.set_min_width(ui.available_width());
+            ui.horizontal(|ui| {
+                paint_badge_icon(ui, FeatureIcon::AuditTerminal, ACCENT_CYAN);
+                ui.add_space(10.0);
+                ui.vertical(|ui| {
+                    ui.label(
+                        RichText::new("Live Process & Running Tasks Inspector")
+                            .strong()
+                            .size(17.0)
+                            .color(TEXT_PRIMARY),
+                    );
+                    ui.add_space(2.0);
+                    ui.label(
+                        RichText::new("Inspects active PIDs, hashes in-memory binary disks against offline signatures, detects fake system processes, and checks Temp directory execution.")
+                            .size(12.0)
+                            .color(TEXT_MUTED),
+                    );
+                });
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    if primary_button(ui, "Scan Running Tasks", 160.0, 34.0, ACCENT_CYAN).clicked() {
+                        self.process_items = audit_running_processes(&self.signatures);
+                        let flagged = self.process_items.iter().filter(|p| p.risk.is_threat()).count();
+                        let total = self.process_items.len();
+                        let msg = format!("Audited {total} processes: {flagged} flagged suspicious.");
+                        self.push_log(if flagged > 0 { LogLevel::Threat } else { LogLevel::Info }, "ProcessAudit", msg, None);
+                    }
+                });
+            });
+
+            ui.add_space(12.0);
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("Filter:").size(12.5).color(TEXT_MUTED));
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.process_search)
+                        .hint_text("Search PID, process name, or path...")
+                        .desired_width(320.0),
+                );
+                if !self.process_search.is_empty() && secondary_button(ui, "Clear", 60.0, 24.0).clicked() {
+                    self.process_search.clear();
+                }
+
+                let total = self.process_items.len();
+                let flagged = self.process_items.iter().filter(|p| p.risk.is_threat()).count();
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    ui.label(
+                        RichText::new(format!("Total: {total} PIDs  •  Flagged: {flagged}"))
+                            .size(12.0)
+                            .color(if flagged > 0 { ACCENT_RED_SOFT } else { TEXT_MUTED }),
+                    );
+                });
+            });
+        });
+
+        ui.add_space(14.0);
+
+        // Process List Card
+        card_frame(BG_CARD).show(ui, |ui| {
+            ui.set_min_width(ui.available_width());
+            if self.process_items.is_empty() {
+                ui.vertical_centered(|ui| {
+                    ui.add_space(20.0);
+                    ui.label(
+                        RichText::new("Click 'Scan Running Tasks' to evaluate live memory and process integrity.")
+                            .size(13.0)
+                            .color(TEXT_MUTED),
+                    );
+                    ui.add_space(20.0);
+                });
+            } else {
+                let search_lower = self.process_search.to_lowercase();
+                let filtered: Vec<&ProcessAuditItem> = self
+                    .process_items
+                    .iter()
+                    .filter(|p| {
+                        if search_lower.is_empty() {
+                            return true;
+                        }
+                        p.name.to_lowercase().contains(&search_lower)
+                            || p.pid.to_string().contains(&search_lower)
+                            || p.exe_path.as_ref().map(|path| path.display().to_string().to_lowercase().contains(&search_lower)).unwrap_or(false)
+                    })
+                    .collect();
+
+                let mut kill_pid: Option<u32> = None;
+
+                for item in filtered.iter().take(150) {
+                    let is_clean = !item.risk.is_threat();
+                    let risk_color = match item.risk {
+                        ProcessRisk::KnownMalwareMatch => ACCENT_RED,
+                        ProcessRisk::Masquerading | ProcessRisk::DeletedBinaryExecution => ACCENT_RED_SOFT,
+                        ProcessRisk::SuspiciousPath => ACCENT_AMBER,
+                        ProcessRisk::Clean => ACCENT_GREEN,
+                    };
+
+                    Frame::new()
+                        .fill(if is_clean { BG_ELEVATED } else { BG_HERO_THREAT })
+                        .stroke(Stroke::new(1.0, if is_clean { BORDER_SUBTLE } else { risk_color }))
+                        .corner_radius(CornerRadius::same(6))
+                        .inner_margin(Margin::symmetric(12, 8))
+                        .show(ui, |ui| {
+                            ui.horizontal(|ui| {
+                                ui.label(
+                                    RichText::new(format!("PID {}", item.pid))
+                                        .monospace()
+                                        .strong()
+                                        .size(12.0)
+                                        .color(ACCENT_CYAN),
+                                );
+                                ui.add_space(8.0);
+                                ui.label(
+                                    RichText::new(&item.name)
+                                        .strong()
+                                        .size(13.0)
+                                        .color(TEXT_PRIMARY),
+                                );
+                                ui.add_space(6.0);
+                                tag_pill(ui, item.risk.label(), risk_color);
+
+                                if let Some(ref path) = item.exe_path {
+                                    ui.add_space(8.0);
+                                    ui.label(
+                                        RichText::new(path.display().to_string())
+                                            .size(11.0)
+                                            .color(TEXT_MUTED),
+                                    );
+                                }
+
+                                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                    if !is_clean {
+                                        if danger_button(ui, "Kill PID", 80.0, 26.0).clicked() {
+                                            kill_pid = Some(item.pid);
+                                        }
+                                    }
+                                    if item.memory_kb > 0 {
+                                        let mb = item.memory_kb as f64 / 1024.0;
+                                        ui.label(
+                                            RichText::new(format!("{mb:.1} MB"))
+                                                .monospace()
+                                                .size(11.5)
+                                                .color(TEXT_SECONDARY),
+                                        );
+                                    }
+                                    if let Some(ref reason) = item.risk_reason {
+                                        ui.label(
+                                            RichText::new(reason)
+                                                .size(11.0)
+                                                .color(risk_color),
+                                        );
+                                    }
+                                });
+                            });
+                        });
+                    ui.add_space(4.0);
+                }
+
+                if let Some(pid) = kill_pid {
+                    match kill_process(pid) {
+                        Ok(()) => {
+                            let msg = format!("Terminated PID {pid}.");
+                            self.banner_feedback = Some((msg.clone(), false));
+                            self.push_log(LogLevel::Success, "ProcessAudit", msg, None);
+                            self.process_items.retain(|p| p.pid != pid);
+                        }
+                        Err(e) => {
+                            let err_msg = format!("Failed to terminate PID {pid}: {e}");
+                            self.banner_feedback = Some((err_msg.clone(), true));
+                            self.push_log(LogLevel::Warning, "ProcessAudit", err_msg, None);
+                        }
+                    }
+                }
+            }
+        });
+    }
+
+    // -------------------------------------------------------------
+    // Tab: Active Network Sockets & Covert C2 Monitor
+    // -------------------------------------------------------------
+    fn render_network_sockets(&mut self, ui: &mut egui::Ui) {
+        card_frame(BG_CARD).show(ui, |ui| {
+            ui.set_min_width(ui.available_width());
+            ui.horizontal(|ui| {
+                paint_badge_icon(ui, FeatureIcon::PulseCheck, ACCENT_INDIGO);
+                ui.add_space(10.0);
+                ui.vertical(|ui| {
+                    ui.label(
+                        RichText::new("Active Network Sockets & C2 Beacon Monitor")
+                            .strong()
+                            .size(17.0)
+                            .color(TEXT_PRIMARY),
+                    );
+                    ui.add_space(2.0);
+                    ui.label(
+                        RichText::new("Real-time TCP/UDP socket auditor. Flags known Metasploit/C2 beacon ports (4444, 1337, 31337, 9001) and unauthenticated 0.0.0.0 listeners.")
+                            .size(12.0)
+                            .color(TEXT_MUTED),
+                    );
+                });
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    if primary_button(ui, "Audit Sockets", 140.0, 34.0, ACCENT_INDIGO).clicked() {
+                        self.socket_items = scan_active_network_sockets();
+                        let sus = self.socket_items.iter().filter(|s| s.risk.is_suspicious()).count();
+                        let total = self.socket_items.len();
+                        let msg = format!("Audited {total} network sockets: {sus} flagged suspicious/C2.");
+                        self.push_log(if sus > 0 { LogLevel::Threat } else { LogLevel::Info }, "NetworkAudit", msg, None);
+                    }
+                });
+            });
+
+            ui.add_space(12.0);
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("Filter:").size(12.5).color(TEXT_MUTED));
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.socket_search)
+                        .hint_text("Search IP, Port, PID, or protocol...")
+                        .desired_width(320.0),
+                );
+                if !self.socket_search.is_empty() && secondary_button(ui, "Clear", 60.0, 24.0).clicked() {
+                    self.socket_search.clear();
+                }
+
+                let total = self.socket_items.len();
+                let sus = self.socket_items.iter().filter(|s| s.risk.is_suspicious()).count();
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    ui.label(
+                        RichText::new(format!("Open Sockets: {total}  •  C2 / Suspicious: {sus}"))
+                            .size(12.0)
+                            .color(if sus > 0 { ACCENT_RED_SOFT } else { TEXT_MUTED }),
+                    );
+                });
+            });
+        });
+
+        ui.add_space(14.0);
+
+        // Socket Table Card
+        card_frame(BG_CARD).show(ui, |ui| {
+            ui.set_min_width(ui.available_width());
+            if self.socket_items.is_empty() {
+                ui.vertical_centered(|ui| {
+                    ui.add_space(20.0);
+                    ui.label(
+                        RichText::new("Click 'Audit Sockets' to capture local listening ports and active outbound connections.")
+                            .size(13.0)
+                            .color(TEXT_MUTED),
+                    );
+                    ui.add_space(20.0);
+                });
+            } else {
+                let search_lower = self.socket_search.to_lowercase();
+                let filtered: Vec<&NetworkSocketEntry> = self
+                    .socket_items
+                    .iter()
+                    .filter(|s| {
+                        if search_lower.is_empty() {
+                            return true;
+                        }
+                        let proto_str = match s.protocol {
+                            SocketProtocol::Tcp => "tcp",
+                            SocketProtocol::Udp => "udp",
+                        };
+                        s.local_addr.to_lowercase().contains(&search_lower)
+                            || s.foreign_addr.to_lowercase().contains(&search_lower)
+                            || proto_str.contains(&search_lower)
+                            || s.state.to_lowercase().contains(&search_lower)
+                            || s.pid.map(|p| p.to_string().contains(&search_lower)).unwrap_or(false)
+                    })
+                    .collect();
+
+                let mut kill_pid: Option<u32> = None;
+
+                for socket in filtered.iter().take(150) {
+                    let is_suspicious = socket.risk.is_suspicious();
+                    let proto_str = match socket.protocol {
+                        SocketProtocol::Tcp => "TCP",
+                        SocketProtocol::Udp => "UDP",
+                    };
+
+                    Frame::new()
+                        .fill(if is_suspicious { BG_HERO_THREAT } else { BG_ELEVATED })
+                        .stroke(Stroke::new(1.0, if is_suspicious { ACCENT_RED } else { BORDER_SUBTLE }))
+                        .corner_radius(CornerRadius::same(6))
+                        .inner_margin(Margin::symmetric(12, 8))
+                        .show(ui, |ui| {
+                            ui.horizontal(|ui| {
+                                tag_pill(ui, proto_str, ACCENT_CYAN);
+                                ui.add_space(6.0);
+                                ui.label(
+                                    RichText::new(format!("Local: {}", socket.local_addr))
+                                        .monospace()
+                                        .strong()
+                                        .size(12.0)
+                                        .color(TEXT_PRIMARY),
+                                );
+                                ui.add_space(6.0);
+                                ui.label(
+                                    RichText::new(format!("-> Foreign: {}", socket.foreign_addr))
+                                        .monospace()
+                                        .size(12.0)
+                                        .color(TEXT_SECONDARY),
+                                );
+                                ui.add_space(6.0);
+                                tag_pill(ui, &socket.state, TEXT_MUTED);
+
+                                if let Some(pid) = socket.pid {
+                                    ui.add_space(6.0);
+                                    let proc_tag = socket.process_name.as_deref().unwrap_or("PID");
+                                    ui.label(
+                                        RichText::new(format!("{proc_tag}:{pid}"))
+                                            .monospace()
+                                            .size(11.5)
+                                            .color(ACCENT_AMBER),
+                                    );
+                                }
+
+                                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                    if is_suspicious {
+                                        if let Some(pid) = socket.pid {
+                                            if danger_button(ui, "Kill PID", 80.0, 24.0).clicked() {
+                                                kill_pid = Some(pid);
+                                            }
+                                        }
+                                        if let Some(ref note) = socket.warning {
+                                            ui.label(
+                                                RichText::new(note)
+                                                    .strong()
+                                                    .size(11.0)
+                                                    .color(ACCENT_RED_SOFT),
+                                            );
+                                        }
+                                    }
+                                });
+                            });
+                        });
+                    ui.add_space(4.0);
+                }
+
+                if let Some(pid) = kill_pid {
+                    match kill_process(pid) {
+                        Ok(()) => {
+                            let msg = format!("Terminated socket owner PID {pid}.");
+                            self.banner_feedback = Some((msg.clone(), false));
+                            self.push_log(LogLevel::Success, "NetworkAudit", msg, None);
+                            self.socket_items.retain(|s| s.pid != Some(pid));
+                        }
+                        Err(e) => {
+                            let err_msg = format!("Failed to terminate PID {pid}: {e}");
+                            self.banner_feedback = Some((err_msg.clone(), true));
+                            self.push_log(LogLevel::Warning, "NetworkAudit", err_msg, None);
+                        }
+                    }
+                }
+            }
+        });
+    }
+
+    // -------------------------------------------------------------
+    // Tab: Robust YARA Rules Engine & Shannon Entropy Heuristics
+    // -------------------------------------------------------------
+    fn render_yara_heuristics(&mut self, ui: &mut egui::Ui) {
+        // Section 1: Static Heuristics & Shannon Entropy Analysis
+        card_frame(BG_CARD).show(ui, |ui| {
+            ui.set_min_width(ui.available_width());
+            ui.horizontal(|ui| {
+                paint_badge_icon(ui, FeatureIcon::CustomTarget, ACCENT_CYAN);
+                ui.add_space(10.0);
+                ui.vertical(|ui| {
+                    ui.label(
+                        RichText::new("Static Binary Heuristics & Crypter Entropy Analyzer")
+                            .strong()
+                            .size(17.0)
+                            .color(TEXT_PRIMARY),
+                    );
+                    ui.add_space(2.0);
+                    ui.label(
+                        RichText::new("Evaluates mathematical Shannon entropy (0.0 to 8.0) to detect packed/crypted malware, inspects PE/ELF headers for W+X execution rights, and flags process injection APIs.")
+                            .size(12.0)
+                            .color(TEXT_MUTED),
+                    );
+                });
+            });
+
+            ui.add_space(12.0);
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("Target File:").size(12.5).color(TEXT_MUTED));
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.heuristic_target)
+                        .hint_text("Absolute path to binary (.exe, .dll, ELF, or dropper)...")
+                        .desired_width(450.0),
+                );
+                if secondary_button(ui, "Browse...", 85.0, 28.0).clicked() {
+                    if let Some(picked) = rfd::FileDialog::new().pick_file() {
+                        self.heuristic_target = picked.display().to_string();
+                    }
+                }
+                if primary_button(ui, "Inspect File", 120.0, 28.0, ACCENT_CYAN).clicked() {
+                    let target_path = PathBuf::from(&self.heuristic_target);
+                    if !target_path.exists() {
+                        self.banner_feedback = Some((format!("File '{}' not found.", target_path.display()), true));
+                    } else {
+                        match inspect_file_heuristics(&target_path) {
+                            Ok(rep) => {
+                                let entropy = rep.entropy.score;
+                                let format_str = if rep.pe.is_some() {
+                                    "Windows PE"
+                                } else if rep.elf.is_some() {
+                                    "Linux ELF"
+                                } else {
+                                    "Binary / Raw Data"
+                                };
+                                self.heuristic_report = Some(rep);
+                                self.push_log(
+                                    LogLevel::Info,
+                                    "Heuristics",
+                                    format!("Inspected '{}': format {format_str}, entropy {entropy:.2}/8.0", target_path.display()),
+                                    None,
+                                );
+                            }
+                            Err(e) => {
+                                self.banner_feedback = Some((format!("Heuristic analysis error: {e}"), true));
+                            }
+                        }
+                    }
+                }
+            });
+
+            if let Some(ref report) = self.heuristic_report {
+                ui.add_space(12.0);
+                Frame::new()
+                    .fill(BG_ELEVATED)
+                    .stroke(Stroke::new(1.0, BORDER_BRIGHT))
+                    .corner_radius(CornerRadius::same(8))
+                    .inner_margin(Margin::same(14))
+                    .show(ui, |ui| {
+                        let format_str = if report.pe.is_some() {
+                            "Windows PE Executable"
+                        } else if report.elf.is_some() {
+                            "Linux ELF Binary"
+                        } else {
+                            "Binary / Raw Data"
+                        };
+                        ui.horizontal(|ui| {
+                            ui.vertical(|ui| {
+                                ui.label(
+                                    RichText::new(format!("Format: {format_str}  •  Size: {} bytes", report.file_size))
+                                        .strong()
+                                        .size(13.5)
+                                        .color(TEXT_PRIMARY),
+                                );
+                                ui.add_space(4.0);
+                                let entropy_color = if report.entropy.is_anomalous {
+                                    ACCENT_RED
+                                } else if report.entropy.score > 7.0 {
+                                    ACCENT_AMBER
+                                } else {
+                                    ACCENT_GREEN
+                                };
+                                ui.label(
+                                    RichText::new(format!(
+                                        "Shannon Entropy: {:.3} / 8.000 — {} ({})",
+                                        report.entropy.score, report.entropy.category, report.entropy.description
+                                    ))
+                                    .strong()
+                                    .size(12.5)
+                                    .color(entropy_color),
+                                );
+                            });
+                            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                if report.entropy.is_anomalous {
+                                    tag_pill(ui, "CRYPTER / PACKED ALERT", ACCENT_RED);
+                                } else {
+                                    tag_pill(ui, "NORMAL ENTROPY", ACCENT_GREEN);
+                                }
+                            });
+                        });
+
+                        if !report.risk_indicators.is_empty() {
+                            ui.add_space(8.0);
+                            ui.separator();
+                            ui.add_space(6.0);
+                            ui.label(RichText::new("Header Anomalies & Injection Indicators:").strong().size(12.0).color(ACCENT_AMBER));
+                            for anom in &report.risk_indicators {
+                                ui.label(RichText::new(format!("• {anom}")).size(11.5).color(TEXT_SECONDARY));
+                            }
+                        }
+                    });
+            }
+        });
+
+        ui.add_space(14.0);
+
+        // Section 2: Robust YARA Rules Engine
+        card_frame(BG_CARD).show(ui, |ui| {
+            ui.set_min_width(ui.available_width());
+            ui.horizontal(|ui| {
+                ui.label(
+                    RichText::new(format!("Offline Curated YARA Engine ({} Loaded Rules)", self.yara_engine.rule_count()))
+                        .strong()
+                        .size(16.0)
+                        .color(TEXT_PRIMARY),
+                );
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    tag_pill(ui, "PURE RUST YARA 1.0", ACCENT_CYAN);
+                });
+            });
+            ui.add_space(6.0);
+            ui.label(
+                RichText::new("Robust pure-Rust engine executing string/hex matching with wildcards (??), UTF-16LE wide strings, case-insensitivity, and compound boolean conditions. Bundles 10 curated offline signatures for WannaCry, LockBit 3.0, Mirai, Kinsing, BPFDoor, RedLine, Cobalt Strike Beacon, WebShells, Process Hollowing, and Obfuscated Droppers.")
+                    .size(12.0)
+                    .color(TEXT_MUTED),
+            );
+
+            ui.add_space(12.0);
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("Scan Target:").size(12.5).color(TEXT_MUTED));
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.yara_target_file)
+                        .hint_text("Path to inspect with YARA rule set...")
+                        .desired_width(450.0),
+                );
+                if secondary_button(ui, "Browse...", 85.0, 28.0).clicked() {
+                    if let Some(picked) = rfd::FileDialog::new().pick_file() {
+                        self.yara_target_file = picked.display().to_string();
+                    }
+                }
+                if primary_button(ui, "Run YARA Scan", 130.0, 28.0, ACCENT_CYAN).clicked() {
+                    let target_path = PathBuf::from(&self.yara_target_file);
+                    if !target_path.exists() {
+                        self.banner_feedback = Some((format!("File '{}' does not exist.", target_path.display()), true));
+                    } else {
+                        match self.yara_engine.scan_file(&target_path) {
+                            Ok(matches) => {
+                                let count = matches.len();
+                                self.yara_match_results = matches;
+                                let msg = if count > 0 {
+                                    format!("YARA matched {count} rule(s) on '{}'!", target_path.display())
+                                } else {
+                                    format!("Clean: 0 YARA matches on '{}'.", target_path.display())
+                                };
+                                self.banner_feedback = Some((msg.clone(), count > 0));
+                                self.push_log(if count > 0 { LogLevel::Threat } else { LogLevel::Success }, "YARA", msg, None);
+                            }
+                            Err(e) => {
+                                self.banner_feedback = Some((format!("YARA scan failed: {e}"), true));
+                            }
+                        }
+                    }
+                }
+            });
+
+            if !self.yara_match_results.is_empty() {
+                ui.add_space(10.0);
+                ui.label(RichText::new("YARA Detection Matches:").strong().size(13.0).color(ACCENT_RED_SOFT));
+                for m in &self.yara_match_results {
+                    Frame::new()
+                        .fill(BG_HERO_THREAT)
+                        .stroke(Stroke::new(1.0, ACCENT_RED))
+                        .corner_radius(CornerRadius::same(6))
+                        .inner_margin(Margin::same(10))
+                        .show(ui, |ui| {
+                            ui.horizontal(|ui| {
+                                ui.label(
+                                    RichText::new(&m.rule_name)
+                                        .strong()
+                                        .size(13.5)
+                                        .color(ACCENT_RED_SOFT),
+                                );
+                                ui.add_space(6.0);
+                                tag_pill(ui, &m.severity, ACCENT_RED);
+                            });
+                            ui.add_space(4.0);
+                            ui.label(
+                                RichText::new(format!("Description: {}", m.description))
+                                    .size(11.5)
+                                    .color(TEXT_SECONDARY),
+                            );
+                            ui.label(
+                                RichText::new(format!("Matched patterns: {}", m.matched_patterns.join(", ")))
+                                    .monospace()
+                                    .size(11.0)
+                                    .color(TEXT_MUTED),
+                            );
+                        });
+                    ui.add_space(4.0);
+                }
+            }
+
+            ui.add_space(14.0);
+            ui.separator();
+            ui.add_space(10.0);
+
+            // Custom YARA Rule Tester
+            ui.label(
+                RichText::new("Custom YARA Rule Compiler & Tester")
+                    .strong()
+                    .size(14.0)
+                    .color(TEXT_PRIMARY),
+            );
+            ui.add_space(4.0);
+            ui.label(
+                RichText::new("Write or paste a custom YARA rule to compile in-memory and test against any payload:")
+                    .size(11.5)
+                    .color(TEXT_MUTED),
+            );
+            ui.add_space(6.0);
+
+            ui.add(
+                egui::TextEdit::multiline(&mut self.yara_rule_input)
+                    .font(egui::TextStyle::Monospace)
+                    .hint_text("rule Custom_Test {\n    meta:\n        description = \"Test Rule\"\n    strings:\n        $s1 = \"cmd.exe /c\"\n    condition:\n        $s1\n}")
+                    .desired_width(ui.available_width())
+                    .desired_rows(6),
+            );
+            ui.add_space(6.0);
+            if secondary_button(ui, "Compile & Test Custom Rule", 220.0, 30.0).clicked() {
+                if self.yara_rule_input.trim().is_empty() {
+                    self.banner_feedback = Some(("Please enter YARA rule source text.".to_string(), true));
+                } else {
+                    match parse_yara_source(&self.yara_rule_input) {
+                        Ok(rules) => {
+                            let rule_names: Vec<String> = rules.iter().map(|r| r.name.clone()).collect();
+                            let msg = format!("Compiled {} custom rule(s) successfully: {}", rules.len(), rule_names.join(", "));
+                            self.banner_feedback = Some((msg.clone(), false));
+                            self.push_log(LogLevel::Info, "YARA", msg, None);
+                        }
+                        Err(e) => {
+                            self.banner_feedback = Some((format!("Syntax error in custom YARA rule: {e}"), true));
+                        }
+                    }
+                }
+            }
         });
     }
 }

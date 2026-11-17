@@ -5,10 +5,18 @@ edition = "2021"
 description = "Sentient - Offline-first, privacy-focused Windows desktop antivirus combining Windows MRT integration with a multithreaded hash scanner and quarantine system."
 authors = ["Sentient Security"]
 
+[[bin]]
+name = "sentient"
+path = "src/main.rs"
+
+[[bin]]
+name = "sentient-setup"
+path = "src/bin/installer.rs"
+
 [dependencies]
 eframe = "0.37.0"
 egui = "0.37.0"
-image = { version = "0.25.10", default-features = false, features = ["png"] }
+image = { version = "0.25.10", default-features = false, features = ["png", "ico"] }
 crossbeam-channel = "0.5.15"
 walkdir = "2.5.0"
 sha2 = "0.11.1"
