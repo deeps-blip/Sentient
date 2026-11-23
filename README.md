@@ -103,22 +103,35 @@
 - **PE Header Inspection (Windows)**: Parses `IMAGE_DOS_HEADER`, `IMAGE_NT_HEADERS`, section tables; checks for known packers (`UPX0`, `themida`, `.vmp`), identifies dangerous writable and executable sections (`IMAGE_SCN_MEM_WRITE | IMAGE_SCN_MEM_EXECUTE`), and detects process injection APIs (`VirtualAllocEx`, `WriteProcessMemory`, `CreateRemoteThread`).
 - **ELF Header Inspection (Linux)**: Validates ELF magic (`\x7fELF`), bitness, endianness, and inspects strings for stealth evasion tokens (`/proc/self/mem`, `ptrace`, raw socket bindings).
 
-### 🎯 Robust Pure-Rust Offline YARA Rules Engine (`yara/mod.rs`)
+### 🎯 Robust Real-Time & Offline YARA Rules Engine (`yara/mod.rs`)
 - **100% Portable Pure-Rust Engine**: Zero reliance on external C libraries (`libyara`) ensures seamless, error-free cross-compilation across Windows MSVC and Linux MUSL static targets.
 - **Pattern Matching Primitives**: Supports ASCII strings, UTF-16LE wide strings, case-insensitivity (`nocase`), and hex byte sequences with wildcards (`??`).
 - **Compound Condition Evaluator**: Supports `all of them`, `any of them`, `at least N`, `pe and any of them`, and `elf and any of them`.
-- **10 Curated Offline Signatures**:
+- **16 Curated & Live Signatures**:
   1. `Ransomware_WannaCry_Core`: WannaCry killswitch domain, tasksche, mssecsvc.exe.
   2. `Ransomware_LockBit3_Black`: LockBit 3.0 wallpaper tokens, command-line arguments, pass-key hashes.
-  3. `Botnet_Mirai_Agent`: Mirai attack tokens, CNC commands, killer routines.
-  4. `Cryptominer_Kinsing_Payload`: Kinsing mining scripts, masscan calls, crontab persistence.
-  5. `Backdoor_Linux_BPFDoor`: BPFDoor packet filtering, stealth raw sockets.
-  6. `Infostealer_RedLine_Vidar`: Browser credential stealers, crypto wallet path queries.
-  7. `CobaltStrike_Beacon_Payload`: Cobalt Strike named pipes, default stagers, beacon metadata.
-  8. `WebShell_Generic_PHP_JSP`: Common web shells (b374k, c99, r57, passthru execution).
-  9. `ProcessInjection_Hollowing_API`: Process hollowing API sequences (`NtUnmapViewOfSection`, `VirtualAllocEx`).
-  10. `Dropper_Obfuscated_PowerShell`: Encoded droppers (`-enc`, `FromBase64String`, `DownloadString`).
+  3. `Ransomware_Win32_DarkGate_Loader`: DarkGate evasive loader artifacts, AutoIt3 injection, C2 beaconing.
+  4. `Stealer_Win32_LummaC2_Variant`: LummaC2 infostealer browser profile queries and MetaMask crypto wallet hooks.
+  5. `Trojan_Win32_AsyncRAT_Payload`: AsyncRAT client beacon, server certificate verification, and AES payload encryption.
+  6. `Spyware_Win32_AgentTesla_Core`: Agent Tesla keylogger hooks, SMTP exfiltration routines, and clipboard loggers.
+  7. `Backdoor_Win32_Remcos_RemoteControl`: Remcos commercial RAT surveillance markers and encrypted settings.
+  8. `Botnet_Mirai_Agent`: Mirai attack tokens, CNC commands, killer routines.
+  9. `Cryptominer_Kinsing_Payload`: Kinsing mining scripts, masscan calls, crontab persistence.
+  10. `Backdoor_Linux_BPFDoor`: BPFDoor packet filtering, stealth raw sockets.
+  11. `Infostealer_RedLine_Vidar`: Browser credential stealers, crypto wallet path queries.
+  12. `CobaltStrike_Beacon_Payload`: Cobalt Strike named pipes, default stagers, beacon metadata.
+  13. `WebShell_Generic_PHP_JSP`: Common web shells (b374k, c99, r57, passthru execution).
+  14. `ProcessInjection_Hollowing_API`: Process hollowing API sequences (`NtUnmapViewOfSection`, `VirtualAllocEx`).
+  15. `Dropper_Obfuscated_PowerShell`: Encoded droppers (`-enc`, `FromBase64String`, `DownloadString`).
+  16. `Sentient_Test_SimulatedMalware_Live`: Benign test signature for live end-to-end verification.
+- **Real-Time YARA Rules Synchronization (`yara_store.rs`)**: Synchronize live rules directly from YARA API feeds (YARAify / community repositories) with automatic hot-reloading into Sentinel.
 - **In-Memory Custom Rule Compiler**: Write, compile, and validate custom `.yar` rules directly inside the dashboard.
+
+### 🧪 Real-Time Malware Testing Lab & Verification Suite (`yara/tester.rs`)
+- **Authentic Threat Verification Suite**: Built-in testing suite comprising 12 real-world malware specimens (WannaCry, LockBit 3.0, DarkGate, LummaC2, AsyncRAT, AgentTesla, RedLine, Mirai, Kinsing, Cobalt Strike, Dropper, and EICAR).
+- **Sub-Millisecond Verification Metrics**: Computes streaming SHA-256/MD5 and evaluates all compiled YARA rules with microsecond precision and full detection coverage reporting.
+- **One-Click Live Test Dropper**: Generates safe, non-destructive test specimen droppers into user drop folders (`Downloads`, `Temp`) to prove instant on-access interception and quarantine by Sentinel.
+- **Arbitrary Malware File Inspector**: Inspect any external sample, dropper, or binary with full hash matching, rule matching, and Shannon entropy heuristics.
 
 ### 📑 Executive & Technical Forensic Reports (`reports/mod.rs`)
 - **Standalone Cyber-Obsidian HTML Report**: Interactive, styled offline single-page HTML report summarizing threat findings, file indicators, metadata, and print-to-PDF CSS.
@@ -139,11 +152,13 @@ Detected threats are neutralized using a multi-stage defense-in-depth sequence i
 - **Cross-Platform Elevation (`platform.rs`)**:
    - **Windows**: Detects token elevation and provides one-click Windows UAC relaunch (`ShellExecuteW`).
    - **Linux**: Detects UID 0 (root) and supports graphical PolicyKit (`pkexec`) elevation with `sudo` fallback.
-- **Offline Threat Intelligence & Hash DB Updates**:
-   - **100% Offline Database**: Bundles embedded threat definitions (`signatures.json`), enabling full scanning capabilities in completely air-gapped environments.
-   - **Strictly Scoped Updates**: Update operations are strictly restricted to validating and synchronizing the offline hash database / threat intelligence (`signatures.json`). Sentient will never download binary patches, execute remote payloads, or transmit telemetry.
-   - **Air-Gapped Feed Importer**: One-click import of external threat intelligence JSON bundles from secure offline drives or network shares.
-   - **Custom IOC Editor**: Add custom SHA-256 or MD5 threat rules directly into `signatures.json` from **Preferences**.
+- **Real-Time Threat Intelligence & Dual Engine Synchronizer**:
+   - **One-Click Dual Update ("⚡ UPDATE BOTH")**: Simultaneously updates real-time YARA rules from the YARA API (YARAify / public repositories) and cryptographic malware hashes from threat feeds (MalwareBazaar / ThreatFox) in a single operation.
+   - **Hot-Reloaded Sentinel Watcher**: Automatically hot-reloads the active real-time on-access Sentinel background watcher with the newly updated rules and hash signatures without restarting the application.
+   - **100% Offline Database Fallback**: Bundles embedded threat definitions (`signatures.json`), enabling full scanning and update verification even in completely air-gapped or offline environments.
+   - **Strictly Scoped Updates**: Update operations are strictly restricted to threat intelligence rules and hashes. Sentient will never download binary patches or execute remote payloads.
+   - **Air-Gapped Feed Importer**: One-click import of external threat intelligence JSON / YAR bundles from secure offline media or network shares.
+   - **Custom IOC & YARA Editor**: Add custom SHA-256 / MD5 threat rules and compile custom YARA rules directly into the active engines.
 
 ---
 

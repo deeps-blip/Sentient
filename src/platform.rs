@@ -273,3 +273,141 @@ pub fn unharden_quarantined_file(path: &Path) -> std::io::Result<()> {
     }
     Ok(())
 }
+
+/// Performs an HTTP GET request using native OS tooling (`curl` / PowerShell) without external network crate dependencies.
+pub fn http_get(url: &str, timeout_secs: u32) -> Result<String, String> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+        let output = std::process::Command::new("curl.exe")
+            .args(["-s", "-L", "--max-time", &timeout_secs.to_string(), url])
+            .creation_flags(CREATE_NO_WINDOW)
+            .output();
+
+        if let Ok(out) = output {
+            if out.status.success() {
+                let body = String::from_utf8_lossy(&out.stdout).to_string();
+                if !body.trim().is_empty() {
+                    return Ok(body);
+                }
+            }
+        }
+
+        // PowerShell fallback
+        let ps_cmd = format!(
+            "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; (Invoke-WebRequest -Uri '{}' -UseBasicParsing -TimeoutSec {}).Content",
+            url.replace('\'', "''"),
+            timeout_secs
+        );
+        let ps_output = std::process::Command::new("powershell")
+            .args(["-NoProfile", "-NonInteractive", "-Command", &ps_cmd])
+            .creation_flags(CREATE_NO_WINDOW)
+            .output();
+
+        if let Ok(out) = ps_output {
+            if out.status.success() {
+                let body = String::from_utf8_lossy(&out.stdout).to_string();
+                if !body.trim().is_empty() {
+                    return Ok(body);
+                }
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    {
+        let output = std::process::Command::new("curl")
+            .args(["-s", "-L", "--max-time", &timeout_secs.to_string(), url])
+            .output();
+
+        if let Ok(out) = output {
+            if out.status.success() {
+                let body = String::from_utf8_lossy(&out.stdout).to_string();
+                if !body.trim().is_empty() {
+                    return Ok(body);
+                }
+            }
+        }
+    }
+
+    Err(format!("Endpoint '{url}' is unreachable or returned empty response."))
+}
+
+/// Performs an HTTP POST request with form-urlencoded data using native OS tooling (`curl` / PowerShell).
+pub fn http_post_form(url: &str, form_data: &str, timeout_secs: u32) -> Result<String, String> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+        let output = std::process::Command::new("curl.exe")
+            .args([
+                "-s",
+                "-L",
+                "--max-time",
+                &timeout_secs.to_string(),
+                "-d",
+                form_data,
+                url,
+            ])
+            .creation_flags(CREATE_NO_WINDOW)
+            .output();
+
+        if let Ok(out) = output {
+            if out.status.success() {
+                let body = String::from_utf8_lossy(&out.stdout).to_string();
+                if !body.trim().is_empty() {
+                    return Ok(body);
+                }
+            }
+        }
+
+        let ps_cmd = format!(
+            "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; (Invoke-RestMethod -Method Post -Uri '{}' -Body '{}' -TimeoutSec {} | ConvertTo-Json -Depth 5)",
+            url.replace('\'', "''"),
+            form_data.replace('\'', "''"),
+            timeout_secs
+        );
+        let ps_output = std::process::Command::new("powershell")
+            .args(["-NoProfile", "-NonInteractive", "-Command", &ps_cmd])
+            .creation_flags(CREATE_NO_WINDOW)
+            .output();
+
+        if let Ok(out) = ps_output {
+            if out.status.success() {
+                let body = String::from_utf8_lossy(&out.stdout).to_string();
+                if !body.trim().is_empty() {
+                    return Ok(body);
+                }
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    {
+        let output = std::process::Command::new("curl")
+            .args([
+                "-s",
+                "-L",
+                "--max-time",
+                &timeout_secs.to_string(),
+                "-d",
+                form_data,
+                url,
+            ])
+            .output();
+
+        if let Ok(out) = output {
+            if out.status.success() {
+                let body = String::from_utf8_lossy(&out.stdout).to_string();
+                if !body.trim().is_empty() {
+                    return Ok(body);
+                }
+            }
+        }
+    }
+
+    Err(format!("Failed to post to '{url}'."))
+}

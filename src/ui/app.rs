@@ -16,7 +16,10 @@ use crate::scanner::scanner::{
 };
 use crate::sentinel::{SentinelAlert, SentinelManager};
 use crate::usb::{detect_removable_drives, immunize_drive, UsbDriveInfo};
-use crate::yara::{parse_yara_source, YaraEngine, YaraMatch};
+use crate::yara::{
+    audit_target_against_malware_pool, get_malware_pool_catalog, parse_yara_source,
+    MalwarePoolAuditReport, YaraEngine, YaraMatch, YaraStore,
+};
 use crossbeam_channel::{unbounded, Receiver};
 use eframe::egui::{
     self, Align, Color32, CornerRadius, Frame, Layout, Margin, Pos2, Rect, RichText, ScrollArea,
@@ -173,6 +176,12 @@ pub struct SentientApp {
     yara_rule_input: String,
     yara_target_file: String,
     yara_match_results: Vec<YaraMatch>,
+
+    // Real-Time Rules & MalwareBazaar Threat Pool
+    yara_store: YaraStore,
+    bazaar_lookup_input: String,
+    bazaar_audit_report: Option<MalwarePoolAuditReport>,
+    is_updating_feeds: bool,
 }
 
 impl SentientApp {
@@ -222,7 +231,8 @@ impl SentientApp {
                 }
             });
 
-        let yara_engine = Arc::new(YaraEngine::new());
+        let yara_store = YaraStore::new();
+        let yara_engine = Arc::new(yara_store.load_or_seed().unwrap_or_else(|_| YaraEngine::new()));
         let (sentinel_tx, sentinel_rx) = unbounded();
         let sentinel_manager = Some(SentinelManager::start(
             Arc::clone(&signatures),
@@ -272,6 +282,10 @@ impl SentientApp {
             yara_rule_input: String::new(),
             yara_target_file: String::new(),
             yara_match_results: Vec::new(),
+            yara_store,
+            bazaar_lookup_input: String::new(),
+            bazaar_audit_report: None,
+            is_updating_feeds: false,
         };
 
         if app.logs.is_empty() {
@@ -741,6 +755,146 @@ impl SentientApp {
             }
         }
     }
+
+    /// Core feature: Synchronizes both real-time YARA rules from the YARA API and malware hashes from the Hash DB.
+    pub fn update_both_threat_feeds(&mut self) {
+        self.is_updating_feeds = true;
+        let mut messages = Vec::new();
+        let mut total_yara_added = 0;
+        let mut total_hash_added = 0;
+        let mut had_error = false;
+
+        // 1. Update Real-Time YARA Rules from YARA API
+        match self.yara_store.update_from_api(None) {
+            Ok((new_engine, added)) => {
+                self.yara_engine = Arc::new(new_engine);
+                total_yara_added = added;
+                messages.push(format!("YARA Engine: +{added} rules (total: {})", self.yara_engine.rule_count()));
+            }
+            Err(e) => {
+                had_error = true;
+                messages.push(format!("YARA Notice: {e}"));
+            }
+        }
+
+        // 2. Update Real-Time Malware Hashes from Hash DB Feed
+        match self.sig_store.update_from_api(None) {
+            Ok((new_index, added)) => {
+                self.signatures = Arc::new(new_index);
+                total_hash_added = added;
+                messages.push(format!("Hash DB: +{added} IOCs (total: {})", self.signatures.len()));
+            }
+            Err(e) => {
+                had_error = true;
+                messages.push(format!("Hash DB Notice: {e}"));
+            }
+        }
+
+        // 3. Hot-reload the active real-time Sentinel background watcher
+        if let Some(ref mut mgr) = self.sentinel_manager {
+            mgr.stop();
+        }
+        let (sentinel_tx, sentinel_rx) = crossbeam_channel::unbounded();
+        self.sentinel_manager = Some(SentinelManager::start(
+            Arc::clone(&self.signatures),
+            Arc::clone(&self.yara_engine),
+            self.persisted.settings.auto_quarantine,
+            sentinel_tx,
+        ));
+        self.sentinel_rx = Some(sentinel_rx);
+        self.sentinel_enabled = true;
+        self.is_updating_feeds = false;
+
+        let status_summary = messages.join("  •  ");
+        let banner_msg = format!("⚡ Real-time update complete: {status_summary}. Background Sentinel hot-reloaded with live definitions.");
+        self.banner_feedback = Some((banner_msg.clone(), had_error));
+        self.push_log(
+            if had_error { LogLevel::Warning } else { LogLevel::Success },
+            "ThreatIntel",
+            banner_msg,
+            Some(format!("Added: {total_yara_added} YARA rules, {total_hash_added} threat hashes. Active protection hot-reloaded.")),
+        );
+    }
+
+    /// Updates only the real-time YARA rules from the YARA API.
+    pub fn update_yara_rules_only(&mut self) {
+        match self.yara_store.update_from_api(None) {
+            Ok((new_engine, added)) => {
+                self.yara_engine = Arc::new(new_engine);
+                if let Some(ref mut mgr) = self.sentinel_manager {
+                    mgr.stop();
+                }
+                let (sentinel_tx, sentinel_rx) = crossbeam_channel::unbounded();
+                self.sentinel_manager = Some(SentinelManager::start(
+                    Arc::clone(&self.signatures),
+                    Arc::clone(&self.yara_engine),
+                    self.persisted.settings.auto_quarantine,
+                    sentinel_tx,
+                ));
+                self.sentinel_rx = Some(sentinel_rx);
+                let msg = format!("YARA rules updated! Added {added} rules. Total loaded: {}.", self.yara_engine.rule_count());
+                self.banner_feedback = Some((msg.clone(), false));
+                self.push_log(LogLevel::Success, "YARA", msg, None);
+            }
+            Err(e) => {
+                self.banner_feedback = Some((format!("Failed to update YARA rules: {e}"), true));
+            }
+        }
+    }
+
+    /// Updates only the cryptographic hash database from the feed.
+    pub fn update_hash_db_only(&mut self) {
+        match self.sig_store.update_from_api(None) {
+            Ok((new_index, added)) => {
+                self.signatures = Arc::new(new_index);
+                if let Some(ref mut mgr) = self.sentinel_manager {
+                    mgr.stop();
+                }
+                let (sentinel_tx, sentinel_rx) = crossbeam_channel::unbounded();
+                self.sentinel_manager = Some(SentinelManager::start(
+                    Arc::clone(&self.signatures),
+                    Arc::clone(&self.yara_engine),
+                    self.persisted.settings.auto_quarantine,
+                    sentinel_tx,
+                ));
+                self.sentinel_rx = Some(sentinel_rx);
+                let msg = format!("Hash database updated! Added {added} IOCs. Total indexed: {}.", self.signatures.len());
+                self.banner_feedback = Some((msg.clone(), false));
+                self.push_log(LogLevel::Success, "ThreatIntel", msg, None);
+            }
+            Err(e) => {
+                self.banner_feedback = Some((format!("Failed to update hash database: {e}"), true));
+            }
+        }
+    }
+
+    /// Audits a target file or hash against the real-time MalwareBazaar threat intelligence pool and local engines.
+    pub fn audit_against_malware_pool(&mut self, target: &str) {
+        match audit_target_against_malware_pool(target, &self.signatures, &self.yara_engine) {
+            Ok(rep) => {
+                let verdict = if rep.is_malicious {
+                    "THREAT CONFIRMED in MalwareBazaar / IOC Pool"
+                } else {
+                    "Clean - Not identified in active MalwareBazaar pool"
+                };
+                let msg = format!("{verdict} for '{}' ({:.2} ms)", rep.target, rep.detection_latency_ms);
+                self.banner_feedback = Some((msg.clone(), rep.is_malicious));
+                self.push_log(
+                    if rep.is_malicious { LogLevel::Threat } else { LogLevel::Success },
+                    "MalwarePool",
+                    msg,
+                    rep.bazaar_threat_info.as_ref().map(|b| {
+                        format!("Family: {}, Type: {}, Tags: {}", b.signature, b.file_type, b.tags.join(", "))
+                    }),
+                );
+                self.bazaar_audit_report = Some(rep);
+            }
+            Err(e) => {
+                self.banner_feedback = Some((e.clone(), true));
+                self.push_log(LogLevel::Warning, "MalwarePool", e, None);
+            }
+        }
+    }
 }
 
 impl eframe::App for SentientApp {
@@ -1189,6 +1343,11 @@ impl SentientApp {
                                 &format!("{} Signatures", sig_count),
                                 ACCENT_INDIGO,
                             );
+                            status_chip(
+                                ui,
+                                &format!("{} YARA Rules", self.yara_engine.rule_count()),
+                                ACCENT_TEAL,
+                            );
                         });
                     });
 
@@ -1210,21 +1369,28 @@ impl SentientApp {
                             {
                                 self.active_tab = NavTab::ScanCenter;
                             }
-                        } else if primary_button(
-                            ui,
-                            "Run Quick Scan",
-                            165.0,
-                            40.0,
-                            ACCENT_CYAN,
-                        )
-                        .clicked()
-                        {
-                            let roots = quick_scan_roots();
-                            self.start_hash_scan(
-                                ScanMode::QuickHash,
-                                roots,
-                                "Critical User Locations".to_string(),
-                            );
+                        } else {
+                            ui.horizontal(|ui| {
+                                if primary_button(ui, "⚡ UPDATE BOTH (YARA & Hashes)", 210.0, 38.0, ACCENT_TEAL).clicked() {
+                                    self.update_both_threat_feeds();
+                                }
+                                if primary_button(
+                                    ui,
+                                    "Run Quick Scan",
+                                    145.0,
+                                    38.0,
+                                    ACCENT_CYAN,
+                                )
+                                .clicked()
+                                {
+                                    let roots = quick_scan_roots();
+                                    self.start_hash_scan(
+                                        ScanMode::QuickHash,
+                                        roots,
+                                        "Critical User Locations".to_string(),
+                                    );
+                                }
+                            });
                         }
                     });
                 });
@@ -1261,9 +1427,9 @@ impl SentientApp {
             );
             render_kpi_card(
                 &mut cols[3],
-                "IOC INTELLIGENCE",
-                &format!("{sig_count} Rules"),
-                &format!("v{} Offline DB", self.signatures.version),
+                "IOC & YARA",
+                &format!("{} Hashes / {} Rules", sig_count, self.yara_engine.rule_count()),
+                "Real-time dual protection",
                 ACCENT_TEAL,
             );
         });
@@ -2294,100 +2460,100 @@ impl SentientApp {
 
         ui.add_space(14.0);
 
-        // Signature DB card
+        // Signature DB & Real-Time Intelligence Synchronizer card
         card_frame(BG_CARD).show(ui, |ui| {
             ui.set_min_width(ui.available_width());
             ui.horizontal(|ui| {
                 ui.vertical(|ui| {
                     ui.label(
-                        RichText::new("Offline Threat Signature Database (signatures.json)")
+                        RichText::new("⚡ Real-Time Threat Intelligence & Engine Synchronizer")
                             .strong()
-                            .size(16.0)
+                            .size(17.0)
                             .color(TEXT_PRIMARY),
                     );
                     ui.label(
                         RichText::new(format!(
-                            "Location: {}  •  Version: {}  •  Indexed Threat Signatures: {}",
-                            self.sig_store.path().display(),
-                            self.signatures.version,
-                            self.signatures.len()
+                            "Hash DB: {} indexed threat IOCs (signatures.json)  •  YARA Engine: {} active rules (yara_rules.json)  •  Live Watcher: Active",
+                            self.signatures.len(),
+                            self.yara_engine.rule_count()
                         ))
                         .size(12.0)
                         .color(TEXT_MUTED),
                     );
                 });
-                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    if secondary_button(ui, "Reload DB", 90.0, 30.0).clicked() {
-                        match self.sig_store.load_or_seed() {
-                            Ok(idx) => {
-                                self.signatures = Arc::new(idx);
-                                self.banner_feedback = Some((
-                                    format!("Loaded {} threat signatures.", self.signatures.len()),
-                                    false,
-                                ));
-                            }
-                            Err(e) => {
-                                self.banner_feedback = Some((e, true));
-                            }
-                        }
-                    }
+            });
 
-                    if secondary_button(ui, "Import Feed (JSON)", 140.0, 30.0).clicked() {
-                        let dialog = rfd::FileDialog::new()
-                            .set_title("Import Offline Threat Intelligence (JSON)")
-                            .add_filter("Threat Intelligence JSON", &["json"]);
-                        if let Some(file_path) = dialog.pick_file() {
-                            match self.sig_store.import_threat_intel_file(&file_path) {
-                                Ok((idx, added)) => {
-                                    self.signatures = Arc::new(idx);
-                                    let file_name = file_path
-                                        .file_name()
-                                        .and_then(|n| n.to_str())
-                                        .unwrap_or("feed");
-                                    let msg = format!(
-                                        "Imported {added} new threats from '{file_name}'. Total indexed: {}.",
-                                        self.signatures.len()
-                                    );
-                                    self.banner_feedback = Some((msg.clone(), false));
-                                    self.push_log(LogLevel::Info, "ThreatIntel", msg, None);
-                                }
-                                Err(e) => {
-                                    self.banner_feedback = Some((e, true));
-                                }
-                            }
-                        }
-                    }
+            ui.add_space(12.0);
+            ui.horizontal_wrapped(|ui| {
+                if primary_button(ui, "⚡ UPDATE BOTH (YARA Rules & Hash DB)", 280.0, 34.0, ACCENT_CYAN).clicked() {
+                    self.update_both_threat_feeds();
+                }
 
-                    if primary_button(ui, "Update Threat Intel", 150.0, 30.0, ACCENT_CYAN).clicked() {
-                        match self.sig_store.sync_with_embedded_or_workspace_intel() {
-                            Ok((idx, added)) => {
-                                self.signatures = Arc::new(idx);
-                                let msg = if added > 0 {
-                                    format!(
-                                        "Threat intelligence updated! Merged {added} new threat hashes. Total indexed: {}.",
-                                        self.signatures.len()
-                                    )
-                                } else {
-                                    format!(
-                                        "Threat intelligence database is already up to date. Total indexed: {}.",
-                                        self.signatures.len()
-                                    )
-                                };
-                                self.banner_feedback = Some((msg.clone(), false));
-                                self.push_log(LogLevel::Info, "ThreatIntel", msg, None);
-                            }
-                            Err(e) => {
-                                self.banner_feedback = Some((e, true));
+                if secondary_button(ui, "Update YARA Rules (API)", 175.0, 34.0).clicked() {
+                    self.update_yara_rules_only();
+                }
+
+                if secondary_button(ui, "Update Hash DB (Feed)", 165.0, 34.0).clicked() {
+                    self.update_hash_db_only();
+                }
+
+                if secondary_button(ui, "Import Feed (JSON/YAR)", 160.0, 34.0).clicked() {
+                    let dialog = rfd::FileDialog::new()
+                        .set_title("Import Threat Intelligence / YARA Rules")
+                        .add_filter("Intelligence Files", &["json", "yar", "yara"]);
+                    if let Some(file_path) = dialog.pick_file() {
+                        if let Some(ext) = file_path.extension().and_then(|e| e.to_str()) {
+                            if ext.eq_ignore_ascii_case("yar") || ext.eq_ignore_ascii_case("yara") {
+                                match self.yara_store.import_yara_file(&file_path) {
+                                    Ok((new_eng, added)) => {
+                                        self.yara_engine = Arc::new(new_eng);
+                                        let msg = format!("Imported {added} YARA rules from '{}'. Total: {}.", file_path.display(), self.yara_engine.rule_count());
+                                        self.banner_feedback = Some((msg.clone(), false));
+                                        self.push_log(LogLevel::Info, "YARA", msg, None);
+                                    }
+                                    Err(e) => {
+                                        self.banner_feedback = Some((e, true));
+                                    }
+                                }
+                            } else {
+                                match self.sig_store.import_threat_intel_file(&file_path) {
+                                    Ok((idx, added)) => {
+                                        self.signatures = Arc::new(idx);
+                                        let file_name = file_path
+                                            .file_name()
+                                            .and_then(|n| n.to_str())
+                                            .unwrap_or("feed");
+                                        let msg = format!(
+                                            "Imported {added} new threats from '{file_name}'. Total indexed: {}.",
+                                            self.signatures.len()
+                                        );
+                                        self.banner_feedback = Some((msg.clone(), false));
+                                        self.push_log(LogLevel::Info, "ThreatIntel", msg, None);
+                                    }
+                                    Err(e) => {
+                                        self.banner_feedback = Some((e, true));
+                                    }
+                                }
                             }
                         }
                     }
-                });
+                }
+
+                if secondary_button(ui, "Reload Local DB", 120.0, 34.0).clicked() {
+                    if let Ok(idx) = self.sig_store.load_or_seed() {
+                        self.signatures = Arc::new(idx);
+                    }
+                    if let Ok(eng) = self.yara_store.load_or_seed() {
+                        self.yara_engine = Arc::new(eng);
+                    }
+                    self.banner_feedback = Some(("Reloaded local databases from disk.".into(), false));
+                }
             });
 
             ui.add_space(8.0);
             ui.horizontal(|ui| {
                 ui.label(
-                    RichText::new("🛡️ Offline Security Guarantee: Updates run ONLY to update the hash database and threat intelligence. Core binaries, executables, and scanning engines remain 100% offline with zero cloud telemetry.")
+                    RichText::new("🛡️ Real-Time Intelligence Guarantee: Updates connect to legitimate cyber threat feeds (YARAify / MalwareBazaar) to update detection rules and IOC hashes with zero telemetry transmission.")
                         .size(11.5)
                         .color(ACCENT_CYAN),
                 );
@@ -3358,13 +3524,16 @@ impl SentientApp {
             ui.set_min_width(ui.available_width());
             ui.horizontal(|ui| {
                 ui.label(
-                    RichText::new(format!("Offline Curated YARA Engine ({} Loaded Rules)", self.yara_engine.rule_count()))
+                    RichText::new(format!("Real-Time & Offline YARA Engine ({} Active Rules)", self.yara_engine.rule_count()))
                         .strong()
                         .size(16.0)
                         .color(TEXT_PRIMARY),
                 );
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     tag_pill(ui, "PURE RUST YARA 1.0", ACCENT_CYAN);
+                    if primary_button(ui, "⚡ UPDATE BOTH (YARA & Hash DB)", 240.0, 30.0, ACCENT_CYAN).clicked() {
+                        self.update_both_threat_feeds();
+                    }
                 });
             });
             ui.add_space(6.0);
@@ -3492,6 +3661,191 @@ impl SentientApp {
                         }
                     }
                 }
+            }
+        });
+
+        ui.add_space(14.0);
+
+        // Section 3: MalwareBazaar Real-Time Threat Intelligence & Lookup Pool
+        card_frame(BG_CARD).show(ui, |ui| {
+            ui.set_min_width(ui.available_width());
+            ui.horizontal(|ui| {
+                paint_badge_icon(ui, FeatureIcon::DeepShield, ACCENT_CYAN);
+                ui.add_space(10.0);
+                ui.vertical(|ui| {
+                    ui.label(
+                        RichText::new("🌐 MalwareBazaar Real-Time Threat Pool Inspector")
+                            .strong()
+                            .size(17.0)
+                            .color(TEXT_PRIMARY),
+                    );
+                    ui.add_space(2.0);
+                    ui.label(
+                        RichText::new("Verify suspicious files or query SHA-256 / MD5 hashes directly against the real-time MalwareBazaar threat intelligence pool and active YARA rule signatures.")
+                            .size(12.0)
+                            .color(TEXT_MUTED),
+                    );
+                });
+            });
+
+            ui.add_space(14.0);
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("Target:").size(12.5).color(TEXT_MUTED));
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.bazaar_lookup_input)
+                        .hint_text("Absolute file path on disk or 64-char SHA-256 / 32-char MD5 hash...")
+                        .desired_width(450.0),
+                );
+
+                if secondary_button(ui, "Browse File...", 105.0, 28.0).clicked() {
+                    if let Some(picked) = rfd::FileDialog::new().pick_file() {
+                        self.bazaar_lookup_input = picked.display().to_string();
+                    }
+                }
+
+                if primary_button(ui, "🔍 Query Live Pool", 140.0, 28.0, ACCENT_CYAN).clicked() {
+                    let target = self.bazaar_lookup_input.trim().to_string();
+                    if target.is_empty() {
+                        self.banner_feedback = Some(("Please enter a file path or hash to verify.".to_string(), true));
+                    } else {
+                        self.audit_against_malware_pool(&target);
+                    }
+                }
+            });
+
+            ui.add_space(10.0);
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("Quick Threat Lookup:").size(12.0).color(TEXT_MUTED));
+                let catalog = get_malware_pool_catalog();
+                egui::ComboBox::from_id_salt("bazaar_catalog_picker")
+                    .selected_text("Select Known Threat from Pool...")
+                    .width(380.0)
+                    .show_ui(ui, |ui| {
+                        for item in catalog {
+                            let label = format!("{} — {} [{}]", item.name, item.family, item.category);
+                            if ui.selectable_label(false, label).clicked() {
+                                self.bazaar_lookup_input = item.sha256.to_string();
+                                self.audit_against_malware_pool(item.sha256);
+                            }
+                        }
+                    });
+            });
+
+            let audit_rep = self.bazaar_audit_report.clone();
+            if let Some(ref rep) = audit_rep {
+                ui.add_space(12.0);
+                let bg_color = if rep.is_malicious { BG_HERO_THREAT } else { BG_HERO_SAFE };
+                let border_color = if rep.is_malicious { ACCENT_RED } else { ACCENT_GREEN };
+
+                Frame::new()
+                    .fill(bg_color)
+                    .stroke(Stroke::new(1.0, border_color))
+                    .corner_radius(CornerRadius::same(8))
+                    .inner_margin(Margin::same(12))
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            let title = if rep.is_malicious {
+                                "🛡️ THREAT CONFIRMED IN REAL-TIME MALWARE POOL"
+                            } else {
+                                "✅ CLEAN — NOT FOUND IN ACTIVE MALWARE POOL"
+                            };
+                            ui.label(
+                                RichText::new(title)
+                                    .strong()
+                                    .size(14.5)
+                                    .color(if rep.is_malicious { ACCENT_RED } else { ACCENT_GREEN }),
+                            );
+                            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                tag_pill(
+                                    ui,
+                                    &format!("{:.2} ms Latency", rep.detection_latency_ms),
+                                    ACCENT_CYAN,
+                                );
+                            });
+                        });
+
+                        ui.add_space(6.0);
+                        ui.label(
+                            RichText::new(format!(
+                                "Target: {}  •  SHA-256: {}",
+                                rep.target,
+                                if rep.sha256.is_empty() { "N/A" } else { &rep.sha256 }
+                            ))
+                            .monospace()
+                            .size(11.5)
+                            .color(TEXT_SECONDARY),
+                        );
+
+                        if let Some(ref bazaar) = rep.bazaar_threat_info {
+                            ui.add_space(6.0);
+                            ui.separator();
+                            ui.add_space(6.0);
+                            ui.label(
+                                RichText::new(format!(
+                                    "MalwareBazaar Family: {}  •  Type: {}  •  Reporter: {}",
+                                    bazaar.signature,
+                                    bazaar.file_type,
+                                    bazaar.reporter.as_deref().unwrap_or("abuse.ch")
+                                ))
+                                .strong()
+                                .size(12.5)
+                                .color(ACCENT_AMBER),
+                            );
+
+                            if !bazaar.tags.is_empty() {
+                                ui.add_space(4.0);
+                                ui.horizontal_wrapped(|ui| {
+                                    ui.label(RichText::new("Tags:").size(11.5).color(TEXT_MUTED));
+                                    for t in &bazaar.tags {
+                                        tag_pill(ui, t, ACCENT_INDIGO);
+                                    }
+                                });
+                            }
+                        }
+
+                        if !rep.yara_matches.is_empty() {
+                            ui.add_space(4.0);
+                            ui.horizontal_wrapped(|ui| {
+                                ui.label(RichText::new("YARA Rules Triggered:").size(11.5).color(TEXT_MUTED));
+                                for r in &rep.yara_matches {
+                                    tag_pill(ui, r, ACCENT_CYAN);
+                                }
+                            });
+                        }
+
+                        if let Some(ref local_sig) = rep.local_hash_match {
+                            ui.add_space(4.0);
+                            ui.label(
+                                RichText::new(format!("Local Signature Engine Match: {local_sig}"))
+                                    .size(11.5)
+                                    .color(ACCENT_GREEN),
+                            );
+                        }
+
+                        if rep.is_file && rep.is_malicious {
+                            ui.add_space(8.0);
+                            if danger_button(ui, "🔒 Isolate & Quarantine File Now", 220.0, 30.0).clicked() {
+                                let path = PathBuf::from(&rep.target);
+                                if path.exists() {
+                                    let threat_name = rep
+                                        .bazaar_threat_info
+                                        .as_ref()
+                                        .map(|b| format!("Malware.{}.Live", b.signature))
+                                        .unwrap_or_else(|| "Malware.RealtimeThreat".to_string());
+                                    match self.quarantine.quarantine_file(&path, &threat_name, &rep.sha256, &rep.md5) {
+                                        Ok(_) => {
+                                            let msg = format!("Quarantined '{}' successfully.", path.display());
+                                            self.banner_feedback = Some((msg.clone(), false));
+                                            self.push_log(LogLevel::Success, "Quarantine", msg, None);
+                                        }
+                                        Err(e) => {
+                                            self.banner_feedback = Some((format!("Failed to quarantine: {e}"), true));
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    });
             }
         });
     }

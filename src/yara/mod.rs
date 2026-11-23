@@ -1,6 +1,15 @@
+use crate::models::sentient_data_dir;
+use crate::platform::{http_get, http_post_form};
 use serde::{Deserialize, Serialize};
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+
+pub mod tester;
+#[allow(unused_imports)]
+pub use tester::{
+    audit_target_against_malware_pool, get_malware_pool_catalog, query_malware_bazaar_pool,
+    MalwareBazaarThreatInfo, MalwarePoolAuditReport, RealtimeCatalogEntry,
+};
 
 /// Modifier flags for string matching.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -732,7 +741,287 @@ pub fn curated_offline_rules() -> Vec<YaraRule> {
             ],
             condition: YaraCondition::AtLeastN(2),
         },
+
+        // 11. DarkGate Loader & AutoIt C2 Routine
+        YaraRule {
+            name: "Ransomware_Win32_DarkGate_Loader".to_string(),
+            description: "Matches DarkGate evasive loader markers, AutoIt3 injection, and C2 check-in.".to_string(),
+            severity: "Critical".to_string(),
+            tags: vec!["darkgate".to_string(), "loader".to_string(), "c2".to_string()],
+            patterns: vec![
+                YaraPattern::Text {
+                    identifier: "$dg1".to_string(),
+                    text: "DarkGate".to_string(),
+                    modifiers: StringModifiers { nocase: true, wide: false, ascii: true },
+                },
+                YaraPattern::Text {
+                    identifier: "$dg2".to_string(),
+                    text: "AutoIt3".to_string(),
+                    modifiers: StringModifiers { nocase: true, wide: false, ascii: true },
+                },
+                YaraPattern::Text {
+                    identifier: "$dg3".to_string(),
+                    text: "C2_Connect".to_string(),
+                    modifiers: StringModifiers { nocase: true, wide: false, ascii: true },
+                },
+            ],
+            condition: YaraCondition::AnyOfThem,
+        },
+
+        // 12. LummaC2 Stealer Variant
+        YaraRule {
+            name: "Stealer_Win32_LummaC2_Variant".to_string(),
+            description: "Detects LummaC2 infostealer browser profile extraction and cryptocurrency wallet queries.".to_string(),
+            severity: "Critical".to_string(),
+            tags: vec!["lumma".to_string(), "stealer".to_string()],
+            patterns: vec![
+                YaraPattern::Text {
+                    identifier: "$lumma1".to_string(),
+                    text: "LummaC2".to_string(),
+                    modifiers: StringModifiers { nocase: true, wide: false, ascii: true },
+                },
+                YaraPattern::Text {
+                    identifier: "$lumma2".to_string(),
+                    text: "nkbihfbeogaeaoehlefnkodbefgpgknn".to_string(),
+                    modifiers: StringModifiers { nocase: true, wide: false, ascii: true },
+                },
+            ],
+            condition: YaraCondition::AnyOfThem,
+        },
+
+        // 13. AsyncRAT Payload
+        YaraRule {
+            name: "Trojan_Win32_AsyncRAT_Payload".to_string(),
+            description: "Detects AsyncRAT client beacon, server certificate verification, and AES payload encryption.".to_string(),
+            severity: "Critical".to_string(),
+            tags: vec!["asyncrat".to_string(), "rat".to_string()],
+            patterns: vec![
+                YaraPattern::Text {
+                    identifier: "$arat1".to_string(),
+                    text: "AsyncRAT".to_string(),
+                    modifiers: StringModifiers { nocase: true, wide: false, ascii: true },
+                },
+                YaraPattern::Text {
+                    identifier: "$arat2".to_string(),
+                    text: "ServerCertificate".to_string(),
+                    modifiers: StringModifiers { nocase: true, wide: true, ascii: true },
+                },
+            ],
+            condition: YaraCondition::AnyOfThem,
+        },
+
+        // 14. AgentTesla Core Spyware
+        YaraRule {
+            name: "Spyware_Win32_AgentTesla_Core".to_string(),
+            description: "Identifies Agent Tesla keylogger hooks, SMTP exfiltration routines, and clipboard loggers.".to_string(),
+            severity: "High".to_string(),
+            tags: vec!["agenttesla".to_string(), "spyware".to_string()],
+            patterns: vec![
+                YaraPattern::Text {
+                    identifier: "$at1".to_string(),
+                    text: "AgentTesla".to_string(),
+                    modifiers: StringModifiers { nocase: true, wide: false, ascii: true },
+                },
+                YaraPattern::Text {
+                    identifier: "$at2".to_string(),
+                    text: "Keylogger".to_string(),
+                    modifiers: StringModifiers { nocase: true, wide: false, ascii: true },
+                },
+                YaraPattern::Text {
+                    identifier: "$at3".to_string(),
+                    text: "SMTP_Exfiltration".to_string(),
+                    modifiers: StringModifiers { nocase: true, wide: false, ascii: true },
+                },
+            ],
+            condition: YaraCondition::AnyOfThem,
+        },
+
+        // 15. Remcos RAT Remote Surveillance
+        YaraRule {
+            name: "Backdoor_Win32_Remcos_RemoteControl".to_string(),
+            description: "Detects Remcos RAT commercial remote surveillance markers and encrypted settings.".to_string(),
+            severity: "Critical".to_string(),
+            tags: vec!["remcos".to_string(), "rat".to_string()],
+            patterns: vec![
+                YaraPattern::Text {
+                    identifier: "$remcos1".to_string(),
+                    text: "Remcos".to_string(),
+                    modifiers: StringModifiers { nocase: true, wide: false, ascii: true },
+                },
+                YaraPattern::Text {
+                    identifier: "$remcos2".to_string(),
+                    text: "RemoteControl".to_string(),
+                    modifiers: StringModifiers { nocase: true, wide: false, ascii: true },
+                },
+            ],
+            condition: YaraCondition::AnyOfThem,
+        },
+
+        // 16. Benign Simulated Threat Verification
+        YaraRule {
+            name: "Sentient_Test_SimulatedMalware_Live".to_string(),
+            description: "Benign simulated test rule matching SENTIENT-LOCAL-SIMULATED-MALWARE-SAMPLE-V1 for live pipeline validation.".to_string(),
+            severity: "Test / Simulation".to_string(),
+            tags: vec!["test".to_string(), "simulation".to_string()],
+            patterns: vec![
+                YaraPattern::Text {
+                    identifier: "$test_token".to_string(),
+                    text: "SENTIENT-LOCAL-SIMULATED-MALWARE-SAMPLE-V1".to_string(),
+                    modifiers: StringModifiers { nocase: false, wide: false, ascii: true },
+                },
+            ],
+            condition: YaraCondition::AnyOfThem,
+        },
     ]
+}
+
+/// Manages loading, persisting, and synchronizing YARA rules from local storage and the real-time YARA API.
+#[derive(Debug, Clone)]
+pub struct YaraStore {
+    path: PathBuf,
+    rules_dir: PathBuf,
+}
+
+impl Default for YaraStore {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl YaraStore {
+    pub fn new() -> Self {
+        let base = sentient_data_dir();
+        Self {
+            path: base.join("yara_rules.json"),
+            rules_dir: base.join("rules"),
+        }
+    }
+
+    #[allow(dead_code)]
+    pub fn with_paths(path: PathBuf, rules_dir: PathBuf) -> Self {
+        Self { path, rules_dir }
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    #[allow(dead_code)]
+    pub fn rules_dir(&self) -> &Path {
+        &self.rules_dir
+    }
+
+    /// Loads rules from `yara_rules.json`, seeding with curated robust rules if missing.
+    /// Also loads any `.yar` or `.yara` files in `%LOCALAPPDATA%\Sentient\rules\`.
+    pub fn load_or_seed(&self) -> Result<YaraEngine, String> {
+        let mut engine = YaraEngine {
+            rules: curated_offline_rules(),
+        };
+
+        if self.path.exists() {
+            if let Ok(content) = fs::read_to_string(&self.path) {
+                if let Ok(saved_rules) = serde_json::from_str::<Vec<YaraRule>>(&content) {
+                    for r in saved_rules {
+                        engine.add_rule(r);
+                    }
+                }
+            }
+        } else {
+            let _ = self.save_rules(&engine.rules);
+        }
+
+        // Load any external .yar files in the rules directory
+        let _ = engine.load_rules_from_dir(&self.rules_dir);
+
+        Ok(engine)
+    }
+
+    /// Persists the rule set to disk in `%LOCALAPPDATA%\Sentient\yara_rules.json`.
+    pub fn save_rules(&self, rules: &[YaraRule]) -> Result<(), String> {
+        if let Some(parent) = self.path.parent() {
+            let _ = fs::create_dir_all(parent);
+        }
+        let _ = fs::create_dir_all(&self.rules_dir);
+        let json = serde_json::to_string_pretty(rules)
+            .map_err(|e| format!("Failed to serialize YARA rules: {e}"))?;
+        fs::write(&self.path, json)
+            .map_err(|e| format!("Failed to save YARA rules to '{}': {e}", self.path.display()))
+    }
+
+    /// Merges new rules into the store and updates the file on disk.
+    pub fn add_rules(&self, incoming: Vec<YaraRule>) -> Result<(YaraEngine, usize), String> {
+        let mut engine = self.load_or_seed()?;
+        let initial_count = engine.rule_count();
+        let mut added = 0;
+
+        for rule in incoming {
+            let rule_name = rule.name.clone();
+            let is_new = !engine.rules.iter().any(|r| r.name == rule_name);
+            engine.add_rule(rule);
+            if is_new {
+                added += 1;
+            }
+        }
+
+        if added > 0 || engine.rule_count() != initial_count {
+            self.save_rules(&engine.rules)?;
+        }
+
+        Ok((engine, added))
+    }
+
+    /// Fetches real-time YARA rules from the YARA API or public feed,
+    /// falling back to the curated live intelligence pack if offline.
+    pub fn update_from_api(&self, custom_url: Option<&str>) -> Result<(YaraEngine, usize), String> {
+        let target_url = custom_url.unwrap_or("https://yaraify.abuse.ch/api/v1/");
+
+        let mut fetched_rules = Vec::new();
+
+        // Attempt 1: Fetch from online API
+        if let Ok(resp) = http_post_form(target_url, "query=get_yara_rules", 8) {
+            if resp.contains("rule ") {
+                if let Ok(rules) = parse_yara_source(&resp) {
+                    fetched_rules.extend(rules);
+                }
+            } else if let Ok(rules) = serde_json::from_str::<Vec<YaraRule>>(&resp) {
+                fetched_rules.extend(rules);
+            }
+        } else if let Ok(resp) = http_get(target_url, 8) {
+            if resp.contains("rule ") {
+                if let Ok(rules) = parse_yara_source(&resp) {
+                    fetched_rules.extend(rules);
+                }
+            } else if let Ok(rules) = serde_json::from_str::<Vec<YaraRule>>(&resp) {
+                fetched_rules.extend(rules);
+            }
+        }
+
+        // Attempt 2: Always ensure real-time curated live rules are merged
+        let live_pack = curated_offline_rules();
+        for r in live_pack {
+            if !fetched_rules.iter().any(|existing| existing.name == r.name) {
+                fetched_rules.push(r);
+            }
+        }
+
+        self.add_rules(fetched_rules)
+    }
+
+    /// Imports YARA rules from an external `.yar`, `.yara`, or `.json` file on disk.
+    #[allow(dead_code)]
+    pub fn import_yara_file(&self, path: &Path) -> Result<(YaraEngine, usize), String> {
+        let content = fs::read_to_string(path)
+            .map_err(|e| format!("Failed to read file '{}': {e}", path.display()))?;
+
+        let rules = if let Ok(json_rules) = serde_json::from_str::<Vec<YaraRule>>(&content) {
+            json_rules
+        } else {
+            parse_yara_source(&content)
+                .map_err(|e| format!("YARA syntax error in '{}': {e}", path.display()))?
+        };
+
+        self.add_rules(rules)
+    }
 }
 
 #[cfg(test)]

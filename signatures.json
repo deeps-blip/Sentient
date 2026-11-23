@@ -428,6 +428,83 @@
       "md5": "b2259ebe3b2e32f14ec42125bb2a4a75",
       "severity": "Critical",
       "description": "Olympic Destroyer network and wiper payload targeting Winter Olympic infrastructure."
+    },
+    {
+      "name": "Ransom.Win32.WannaCry.LiveSample",
+      "sha256": "22861c2f1364415038029822fc0e0c679fcc05b8e31e1cc42fac112325a98db1",
+      "md5": "05e2091efe3c34aaf9f86e68b484f344",
+      "severity": "Critical",
+      "description": "Live specimen indicator for WannaCry killswitch and tasksche dropper."
+    },
+    {
+      "name": "Ransom.Win32.LockBit3.LiveSample",
+      "sha256": "2dd4f030cfd107eefb7cc78f8a383cd1e001e9201a3a5d54a76a6d9ee548d200",
+      "md5": "5c59cec58547de04238637562719284e",
+      "severity": "Critical",
+      "description": "Live specimen indicator for LockBit 3.0 shadow deletion routine."
+    },
+    {
+      "name": "Trojan.Win32.DarkGate.LiveSample",
+      "sha256": "b3919daa3c0f153fffdced6135ae6aaadd447dc7f270f954e591e620e46ea087",
+      "md5": "86d77cbd7ec69151fa591638e68d3fdc",
+      "severity": "Critical",
+      "description": "Live specimen indicator for DarkGate loader AutoIt C2 routine."
+    },
+    {
+      "name": "Spyware.Win32.Lumma.LiveSample",
+      "sha256": "15400b16ff748af653cfde2c347cfd5d6a8003279dd6506f61b44dd034e8cfa1",
+      "md5": "e75698deb0a23b8c60c164fe6ec9dd60",
+      "severity": "Critical",
+      "description": "Live specimen indicator for LummaC2 extension and profile stealer."
+    },
+    {
+      "name": "Backdoor.Win32.AsyncRAT.LiveSample",
+      "sha256": "9831b20a55611b3a01fd976112cb044cf9352114f99076086698229581120ebd",
+      "md5": "c49eb9ce62e501fa860256361cd6eeca",
+      "severity": "Critical",
+      "description": "Live specimen indicator for AsyncRAT AES pingpong keepalive beacon."
+    },
+    {
+      "name": "Spyware.Win32.AgentTesla.LiveSample",
+      "sha256": "568d2fc96437d22d8c676db568a57abae1449f96526b52acfe37bc6c9e178269",
+      "md5": "52ec5e9eecf817b80c71c58015943800",
+      "severity": "High",
+      "description": "Live specimen indicator for AgentTesla keylogger and SMTP hook."
+    },
+    {
+      "name": "InfoStealer.Win32.RedLine.LiveSample",
+      "sha256": "d234cdd19ba51bc555447e74975951117057992196fa894a699c6b0f818e547f",
+      "md5": "2fdfcb5afb4074406affbf1d7d8481fb",
+      "severity": "High",
+      "description": "Live specimen indicator for RedLine SQLite profile and Telegram bot stealer."
+    },
+    {
+      "name": "Backdoor.Win32.CobaltStrike.LiveSample",
+      "sha256": "77766b1054e4d93ef8f9dd67d2c48f66cc34a71140babda2965e637d9d10007e",
+      "md5": "23dd5d1681051b9d4bba79e835521f02",
+      "severity": "Critical",
+      "description": "Live specimen indicator for Cobalt Strike named pipe beacon."
+    },
+    {
+      "name": "Botnet.Linux.Mirai.LiveSample",
+      "sha256": "fcebb59c3900d84032ff847b0164fd04871721dca06ce61eb501abc36beab45b",
+      "md5": "3b6d31388de1d4ec43c33a060ec1ae29",
+      "severity": "Critical",
+      "description": "Live specimen indicator for Mirai Linux ELF attack ack flood."
+    },
+    {
+      "name": "Miner.Linux.Kinsing.LiveSample",
+      "sha256": "e39ebace37ef2ea2df5e30891838be6e0e1232f5388ae0d9bc1741318f1b345a",
+      "md5": "2769ce4702041b3aaea31ad35724ccd3",
+      "severity": "Critical",
+      "description": "Live specimen indicator for Kinsing cloud miner persistence."
+    },
+    {
+      "name": "Dropper.Script.PowerShell.LiveSample",
+      "sha256": "dd2b30f2ea1e65486ab0637d8cd8b395086242f42a844fa59488718c03b0a68d",
+      "md5": "5e5d9868dcb800c3c52edbe1bfc76e82",
+      "severity": "High",
+      "description": "Live specimen indicator for obfuscated PowerShell hidden window dropper."
     }
   ]
 }
