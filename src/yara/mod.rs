@@ -902,6 +902,7 @@ impl YaraStore {
         Self { path, rules_dir }
     }
 
+    #[allow(dead_code)]
     pub fn path(&self) -> &Path {
         &self.path
     }

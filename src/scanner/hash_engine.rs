@@ -101,6 +101,7 @@ impl SignatureStore {
         Self { path }
     }
 
+    #[allow(dead_code)]
     pub fn path(&self) -> &Path {
         &self.path
     }
@@ -241,6 +242,7 @@ impl SignatureStore {
     }
 
     /// Synchronizes threat intelligence with the local seed / workspace definitions.
+    #[allow(dead_code)]
     pub fn sync_with_embedded_or_workspace_intel(&self) -> Result<(SignatureIndex, usize), String> {
         let local_seed = Path::new("signatures.json");
         let content = if local_seed.exists() {
