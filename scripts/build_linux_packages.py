@@ -194,6 +194,12 @@ exit 0
         # Icons
         add_file(LOGO_PNG, "./usr/share/icons/hicolor/256x256/apps/sentient.png", 0o644)
         add_file(LOGO_PNG, "./usr/share/pixmaps/sentient.png", 0o644)
+        linux_icons_dir = os.path.join(ROOT_DIR, "target", "linux_icons")
+        if os.path.isdir(linux_icons_dir):
+            for s in [16, 24, 32, 48, 64, 128]:
+                icon_file = os.path.join(linux_icons_dir, f"sentient_{s}x{s}.png")
+                if os.path.isfile(icon_file):
+                    add_file(icon_file, f"./usr/share/icons/hicolor/{s}x{s}/apps/sentient.png", 0o644)
         # Polkit
         add_file(POLKIT_FILE, "./usr/share/polkit-1/actions/org.sentient.security.policy", 0o644)
 

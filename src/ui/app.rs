@@ -1070,7 +1070,7 @@ impl SentientApp {
             let (rect, _) = ui.allocate_exact_size(halo_size, egui::Sense::hover());
             let center = rect.center();
             ui.painter()
-                .circle_filled(center, 54.0, Color32::from_rgb(52, 68, 92));
+                .circle_filled(center, 54.0, Color32::from_rgb(18, 26, 42));
             ui.painter()
                 .circle_stroke(center, 54.0, Stroke::new(1.5, ACCENT_CYAN));
             ui.painter().circle_stroke(
@@ -1080,9 +1080,9 @@ impl SentientApp {
             );
 
             if let Some(ref tex) = self.logo_texture {
-                let img_rect = Rect::from_center_size(center, Vec2::new(88.0, 86.0));
+                let img_rect = Rect::from_center_size(center, Vec2::new(92.0, 92.0));
                 egui::Image::new(tex)
-                    .fit_to_exact_size(Vec2::new(88.0, 86.0))
+                    .fit_to_exact_size(Vec2::new(92.0, 92.0))
                     .paint_at(ui, img_rect);
             }
 

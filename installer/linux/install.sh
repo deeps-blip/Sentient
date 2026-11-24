@@ -95,9 +95,14 @@ install_sentient() {
     # 4. Install logos and application icons
     if [[ -f "${SOURCE_LOGO}" ]]; then
         echo -e "  -> Installing icons..."
+        mkdir -p "${ICONS_DIR}" "${PIXMAPS_DIR}"
         cp -f "${SOURCE_LOGO}" "${ICONS_DIR}/sentient.png"
         cp -f "${SOURCE_LOGO}" "${PIXMAPS_DIR}/sentient.png"
         chmod 0644 "${ICONS_DIR}/sentient.png" "${PIXMAPS_DIR}/sentient.png"
+        for size in 16 24 32 48 64 128; do
+            mkdir -p "/usr/share/icons/hicolor/${size}x${size}/apps"
+            cp -f "${SOURCE_LOGO}" "/usr/share/icons/hicolor/${size}x${size}/apps/sentient.png" 2>/dev/null || true
+        done
     fi
 
     # 5. Install FreeDesktop .desktop entry

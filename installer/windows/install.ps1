@@ -100,13 +100,15 @@ if (Test-Path $SourceUninstBat) {
 Write-Host "[3/5] Creating Windows Desktop and Start Menu shortcuts..."
 $WshShell = New-Object -ComObject WScript.Shell
 
+$IconLoc = if (Test-Path $TargetIcon) { $TargetIcon } else { "$TargetExe,0" }
+
 $DesktopPath = [Environment]::GetFolderPath("Desktop")
 $DesktopShortcut = Join-Path $DesktopPath "Sentient.lnk"
 $Shortcut = $WshShell.CreateShortcut($DesktopShortcut)
 $Shortcut.TargetPath = $TargetExe
 $Shortcut.WorkingDirectory = $InstallDir
 $Shortcut.Description = "Sentient High-Performance Offline Endpoint Security"
-$Shortcut.IconLocation = "$TargetIcon,0"
+$Shortcut.IconLocation = $IconLoc
 $Shortcut.Save()
 
 $StartMenuDir = Join-Path ([Environment]::GetFolderPath("Programs")) "Sentient Endpoint Defense"
@@ -116,7 +118,7 @@ $StartShortcut = $WshShell.CreateShortcut($StartShortcutPath)
 $StartShortcut.TargetPath = $TargetExe
 $StartShortcut.WorkingDirectory = $InstallDir
 $StartShortcut.Description = "Sentient High-Performance Offline Endpoint Security"
-$StartShortcut.IconLocation = "$TargetIcon,0"
+$StartShortcut.IconLocation = $IconLoc
 $StartShortcut.Save()
 
 # 4. Create Uninstaller & Registry Entry
@@ -152,7 +154,7 @@ New-Item -Path $RegRoot -Force | Out-Null
 Set-ItemProperty -Path $RegRoot -Name "DisplayName" -Value "Sentient Endpoint Defense"
 Set-ItemProperty -Path $RegRoot -Name "DisplayVersion" -Value "1.0.0"
 Set-ItemProperty -Path $RegRoot -Name "Publisher" -Value "Sentient Security"
-Set-ItemProperty -Path $RegRoot -Name "DisplayIcon" -Value "$TargetIcon,0"
+Set-ItemProperty -Path $RegRoot -Name "DisplayIcon" -Value "`"$TargetIcon`""
 Set-ItemProperty -Path $RegRoot -Name "InstallLocation" -Value $InstallDir
 Set-ItemProperty -Path $RegRoot -Name "UninstallString" -Value "`"$UninstBat`""
 Set-ItemProperty -Path $RegRoot -Name "EstimatedSize" -Value 25000

@@ -4,7 +4,7 @@ Type=Application
 Name=Sentient
 GenericName=Endpoint Defense & Threat Scanner
 Comment=High-Performance Offline Antivirus & Threat Sentinel
-Exec=/usr/local/bin/sentient %F
+Exec=sentient %F
 Icon=sentient
 Terminal=false
 StartupNotify=true
@@ -14,4 +14,4 @@ Actions=ElevatedScan;
 
 [Desktop Action ElevatedScan]
 Name=Run Sentient as Administrator (Root)
-Exec=pkexec /usr/local/bin/sentient
+Exec=pkexec sentient

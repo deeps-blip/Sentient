@@ -92,9 +92,12 @@ fn create_shortcuts(target_exe: &Path, icon_path: &Path, is_admin: bool) -> Resu
     let script = format!(
         r#"$ws = New-Object -ComObject WScript.Shell;
 $exe = '{}';
-$icon = '{},0';
+$iconIco = '{}';
 $workdir = '{}';
 $desc = 'Sentient High-Performance Offline Endpoint Security';
+
+# Use native .ico directly for shell shortcuts (Windows expects bare path for .ico, not ,0)
+$iconLoc = if (Test-Path $iconIco) {{ $iconIco }} else {{ "$exe,0" }};
 
 # 1. Desktop shortcut (handles OneDrive / redirected folders)
 $desktop = $ws.SpecialFolders.Item('Desktop');
@@ -106,7 +109,7 @@ if ($desktop -and (Test-Path $desktop)) {{
     $s.TargetPath = $exe;
     $s.WorkingDirectory = $workdir;
     $s.Description = $desc;
-    $s.IconLocation = $icon;
+    $s.IconLocation = $iconLoc;
     $s.Save();
 }}
 
@@ -122,11 +125,11 @@ if ($programs -and (Test-Path $programs)) {{
     $s2.TargetPath = $exe;
     $s2.WorkingDirectory = $workdir;
     $s2.Description = $desc;
-    $s2.IconLocation = $icon;
+    $s2.IconLocation = $iconLoc;
     $s2.Save();
 }}
 
-# 3. Public Desktop for elevated installations
+# 3. Public Desktop & All Users Start Menu for elevated installations
 if ({}) {{
     $pubDesktop = $ws.SpecialFolders.Item('AllUsersDesktop');
     if ($pubDesktop -and (Test-Path $pubDesktop)) {{
@@ -134,8 +137,19 @@ if ({}) {{
         $s3.TargetPath = $exe;
         $s3.WorkingDirectory = $workdir;
         $s3.Description = $desc;
-        $s3.IconLocation = $icon;
+        $s3.IconLocation = $iconLoc;
         $s3.Save();
+    }}
+    $pubPrograms = [Environment]::GetFolderPath('CommonPrograms');
+    if ($pubPrograms -and (Test-Path $pubPrograms)) {{
+        $pubSmDir = Join-Path $pubPrograms 'Sentient Endpoint Defense';
+        if (-not (Test-Path $pubSmDir)) {{ New-Item -ItemType Directory -Force -Path $pubSmDir | Out-Null; }}
+        $s4 = $ws.CreateShortcut((Join-Path $pubSmDir 'Sentient.lnk'));
+        $s4.TargetPath = $exe;
+        $s4.WorkingDirectory = $workdir;
+        $s4.Description = $desc;
+        $s4.IconLocation = $iconLoc;
+        $s4.Save();
     }}
 }}
 "#,
@@ -167,7 +181,7 @@ fn register_uninstall_entry(install_dir: &Path, is_admin: bool) {
         format!(r#"reg add "{key_path}" /v "DisplayName" /d "Sentient Endpoint Defense" /t REG_SZ /f"#),
         format!(r#"reg add "{key_path}" /v "DisplayVersion" /d "1.0.0" /t REG_SZ /f"#),
         format!(r#"reg add "{key_path}" /v "Publisher" /d "Sentient Security" /t REG_SZ /f"#),
-        format!(r#"reg add "{key_path}" /v "DisplayIcon" /d "{},0" /t REG_SZ /f"#, icon_path.display()),
+        format!(r#"reg add "{key_path}" /v "DisplayIcon" /d "\"{}\"" /t REG_SZ /f"#, icon_path.display()),
         format!(r#"reg add "{key_path}" /v "InstallLocation" /d "{}" /t REG_SZ /f"#, install_dir.display()),
         format!(r#"reg add "{key_path}" /v "UninstallString" /d "\"{}\"" /t REG_SZ /f"#, uninst_bat.display()),
         format!(r#"reg add "{key_path}" /v "EstimatedSize" /d 25000 /t REG_DWORD /f"#),
