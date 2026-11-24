@@ -2,7 +2,7 @@
 
 <img src="assets/logo.png" alt="Sentient Endpoint Security Logo" width="140" />
 
-# 🛡️ SENTIENT
+#  SENTIENT
 
 **High-Performance, Offline-First Desktop Antivirus Engineered in Pure Rust**
 
